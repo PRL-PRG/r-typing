@@ -12,6 +12,7 @@ Pipeline to download CRAN package sources, run the [r-c-typing](../r-c-typing) t
 ## Quick start
 
 ```bash
+export CHECKER_DIR=/path/to/checker
 # Edit packages.txt to list the packages you want, then:
 make
 ```

@@ -22,8 +22,12 @@ is_noise <- function(line) {
     grepl("^Missing:", line) ||
     grepl("^Prep_incl", line) ||
     grepl("^Entry points detected:", line) ||
+    grepl("^Entry points for ", line) ||
     grepl("^Native calls found", line) ||
     grepl("^C source files found", line) ||
+    grepl("^Creating fresh variable:", line) ||
+    grepl("^r-c-typing:", line) ||
+    grepl("^\\s+(Called from|Raised at|Failure)", line) ||
     grepl("^\\s*$", line)
 }
 
@@ -52,10 +56,12 @@ parse_output <- function(lines) {
       error_title <- sub("^untypeable: ", "", lines[i + 1])
       i <- i + 2
 
-      # Collect detail lines until next function or noise
+      # Collect detail lines until next function block or noise.
+      # Only break on "name:" (colon at EOL) which starts a new untypeable block,
+      # not on "name: value" detail lines like "name: Rf_asLogical".
       detail_lines <- character()
       while (i <= n &&
-             !grepl("^[A-Za-z_.][A-Za-z0-9_.]*:", lines[i]) &&
+             !grepl("^[A-Za-z_.][A-Za-z0-9_.]*:$", lines[i]) &&
              !is_noise(lines[i])) {
         detail_lines <- c(detail_lines, lines[i])
         i <- i + 1

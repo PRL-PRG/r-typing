@@ -21,6 +21,7 @@ is_noise <- function(line) {
     grepl("^Not supported yet:", line) ||
     grepl("^Missing:", line) ||
     grepl("^Prep_incl", line) ||
+    grepl("^Entry points detected:", line) ||
     grepl("^Native calls found", line) ||
     grepl("^C source files found", line) ||
     grepl("^\\s*$", line)
@@ -148,6 +149,26 @@ for (exit_file in exit_files) {
 
   # Parse output
   lines <- if (file.exists(out_file)) readLines(out_file, warn = FALSE) else character()
+
+  # Extract entry point counts from "Entry points detected: Call=N, C=N, Fortran=N, External=N"
+  ep_line <- grep("^Entry points detected:", lines, value = TRUE)
+  if (length(ep_line) > 0) {
+    ep_str <- ep_line[1]
+    extract_ep <- function(name) {
+      m <- regmatches(ep_str, regexec(paste0(name, "=(\\d+)"), ep_str))[[1]]
+      if (length(m) == 2) as.integer(m[2]) else 0L
+    }
+    ep_call <- extract_ep("Call")
+    ep_c <- extract_ep("C")
+    ep_fortran <- extract_ep("Fortran")
+    ep_external <- extract_ep("External")
+  } else {
+    ep_call <- NA_integer_
+    ep_c <- NA_integer_
+    ep_fortran <- NA_integer_
+    ep_external <- NA_integer_
+  }
+
   funcs <- parse_output(lines)
 
   n_functions <- nrow(funcs)
@@ -157,6 +178,10 @@ for (exit_file in exit_files) {
 
   all_summary[[length(all_summary) + 1]] <- data.frame(
     package = pkg,
+    ep_call = ep_call,
+    ep_c = ep_c,
+    ep_fortran = ep_fortran,
+    ep_external = ep_external,
     n_functions = n_functions,
     n_typed = n_typed,
     n_untypeable = n_untypeable,

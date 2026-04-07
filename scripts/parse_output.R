@@ -134,13 +134,17 @@ for (exit_file in exit_files) {
   if (crashed) {
     # Extract error message from crash output
     out_lines <- if (file.exists(out_file)) readLines(out_file, warn = FALSE) else character()
-    # Look for Failure("...") line (typically line 2 of a crash backtrace)
-    failure_line <- grep("^\\s*Failure\\(", out_lines, value = TRUE)
-    error_message <- if (length(failure_line) > 0) {
-      trimws(failure_line[1])
+    # Look for OCaml exception lines in crash backtrace
+    exception_line <- grep("^\\s*(Failure|Invalid_argument)\\(", out_lines, value = TRUE)
+    if (length(exception_line) == 0) {
+      # Also try the "r-c-typing: internal error" line
+      exception_line <- grep("^r-c-typing: internal error", out_lines, value = TRUE)
+    }
+    error_message <- if (length(exception_line) > 0) {
+      trimws(exception_line[1])
     } else if (length(out_lines) > 0) {
-      # Fall back to first non-empty line
-      first <- out_lines[nchar(trimws(out_lines)) > 0]
+      # Fall back to first non-empty, non-header line
+      first <- out_lines[nchar(trimws(out_lines)) > 0 & !grepl("^Typing (package|file):", out_lines)]
       if (length(first) > 0) trimws(first[1]) else NA_character_
     } else {
       NA_character_
@@ -175,12 +179,27 @@ for (exit_file in exit_files) {
     ep_external <- NA_integer_
   }
 
+  # Extract entry point names from "Entry points for .XXX convention:" blocks
+  ep_names <- character()
+  ep_header_idx <- grep("^Entry points for \\.", lines)
+  for (hi in ep_header_idx) {
+    j <- hi + 1
+    while (j <= length(lines) && grepl("^\\s+\\S", lines[j])) {
+      ep_names <- c(ep_names, trimws(lines[j]))
+      j <- j + 1
+    }
+  }
+
   funcs <- parse_output(lines)
 
   n_functions <- nrow(funcs)
   n_typed <- sum(funcs$status == "typed")
   n_untypeable <- sum(funcs$status == "untypeable")
   pct_typed <- if (n_functions > 0) round(100 * n_typed / n_functions, 1) else NA_real_
+
+  # Count how many entry points were typed successfully
+  typed_names <- if (n_typed > 0) funcs$function_name[funcs$status == "typed"] else character()
+  n_ep_typed <- sum(ep_names %in% typed_names)
 
   all_summary[[length(all_summary) + 1]] <- data.frame(
     package = pkg,
@@ -190,6 +209,7 @@ for (exit_file in exit_files) {
     ep_external = ep_external,
     n_functions = n_functions,
     n_typed = n_typed,
+    n_ep_typed = n_ep_typed,
     n_untypeable = n_untypeable,
     pct_typed = pct_typed,
     elapsed_sec = elapsed,

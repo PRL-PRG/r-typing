@@ -29,7 +29,8 @@ total_ep_external<- sum(summary_df$ep_external, na.rm = TRUE)
 total_ep         <- total_ep_call + total_ep_c + total_ep_fortran + total_ep_external
 total_ep_typed   <- sum(summary_df$n_ep_typed, na.rm = TRUE)
 
-pct_overall <- if (total_functions > 0) round(100 * total_typed / total_functions, 1) else 0
+pct_overall    <- if (total_functions > 0) round(100 * total_typed / total_functions, 1) else 0
+pct_ep_typed   <- if (total_ep > 0) round(100 * total_ep_typed / total_ep, 1) else 0
 
 # Error categories
 error_cats <- if (nrow(functions_df) > 0) {
@@ -114,18 +115,21 @@ h(sprintf('<div class="stat-card"><div class="value">%d</div><div class="label">
   total_ep, total_ep_call, total_ep_c, total_ep_fortran, total_ep_external))
 h(sprintf('<div class="stat-card"><div class="value">%d</div><div class="label">C functions analysed</div></div>', total_functions))
 h(sprintf('<div class="stat-card"><div class="value">%.1f%%</div><div class="label">Analysed functions typed</div></div>', pct_overall))
+h(sprintf('<div class="stat-card"><div class="value">%.1f%%</div><div class="label">Entrypoints typed</div><div class="ep-breakdown">%d / %d</div></div>',
+  pct_ep_typed, total_ep_typed, total_ep))
 h(sprintf('<div class="stat-card"><div class="value">%d / %d</div><div class="label">Packages without crash</div></div>', n_ok, n_packages))
 h('</div>')
 
 # Per-package table
 h('<h2>Per-package results</h2>')
-h('<table><thead><tr><th>Package</th><th>Entrypoints</th><th>.Call</th><th>.C</th><th>.Fortran</th><th>.External</th><th>Functions analysed</th><th>Typing progress</th><th>Status</th></tr></thead><tbody>')
+h('<table><thead><tr><th>Package</th><th>Entrypoints</th><th>.Call</th><th>.C</th><th>.Fortran</th><th>.External</th><th>EP typing progress</th><th>Functions analysed</th><th>Typing progress</th><th>Status</th></tr></thead><tbody>')
 for (i in seq_len(nrow(summary_df))) {
   r <- summary_df[i, ]
   ep <- r$ep_call + r$ep_c + r$ep_fortran + r$ep_external
   badge <- if (r$crashed) '<span class="badge badge-crash">crashed</span>' else '<span class="badge badge-ok">OK</span>'
-  h(sprintf('<tr><td class="pkg">%s</td><td class="num">%d</td><td class="num">%d</td><td class="num">%d</td><td class="num">%d</td><td class="num">%d</td><td class="num">%d</td><td>%s</td><td>%s</td></tr>',
-    esc(r$package), ep, r$ep_call, r$ep_c, r$ep_fortran, r$ep_external, r$n_functions, pct_bar(r$n_typed, r$n_functions), badge))
+  h(sprintf('<tr><td class="pkg">%s</td><td class="num">%d</td><td class="num">%d</td><td class="num">%d</td><td class="num">%d</td><td class="num">%d</td><td>%s</td><td class="num">%d</td><td>%s</td><td>%s</td></tr>',
+    esc(r$package), ep, r$ep_call, r$ep_c, r$ep_fortran, r$ep_external,
+    pct_bar(r$n_ep_typed, ep), r$n_functions, pct_bar(r$n_typed, r$n_functions), badge))
 }
 h('</tbody></table>')
 

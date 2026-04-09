@@ -1,0 +1,54 @@
+name: Pipeline
+
+on:
+  push:
+    branches: [main]
+  repository_dispatch:
+    types: [r-c-typing-updated]   # triggered by r-c-typing after a new image
+  workflow_dispatch:
+
+jobs:
+  pipeline:
+    runs-on: ubuntu-latest
+    # The r-c-typing image provides the type checker binary, types/, and
+    # libtree-sitter.so, with CHECKER_DIR / CHECKER / TS_LIB_DIR already set.
+    # The image is public (mirrors the public r-c-typing repo).
+    container:
+      image: ghcr.io/programlyrique/r-c-typing:latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install R and GNU parallel
+        run: |
+          apt-get update -qq
+          apt-get install -y --no-install-recommends r-base parallel
+
+      - name: Download source tarballs
+        run: make download
+
+      - name: Extract tarballs
+        run: make extract
+
+      - name: Run type checker
+        run: make typecheck
+
+      - name: Parse results and generate webpage
+        run: make results webpage
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: results-${{ github.run_number }}
+          path: results/
+
+      # Optional: deploy results/index.html to GitHub Pages.
+      # Enable GitHub Pages for this repo (Settings → Pages → Source: gh-pages
+      # branch) and uncomment the step below.
+      #
+      # - name: Deploy to GitHub Pages
+      #   if: github.ref == 'refs/heads/main'
+      #   uses: peaceiris/actions-gh-pages@v4
+      #   with:
+      #     github_token: ${{ secrets.GITHUB_TOKEN }}
+      #     publish_dir: results

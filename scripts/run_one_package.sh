@@ -14,9 +14,10 @@ OUT_DIR="$(realpath -m "$2")"
 
 PKG_NAME="$(basename "$PKG_DIR")"
 
-CHECKER_DIR="/home/pierre/Documents/RLanguage/r-c-typing"
-CHECKER="$CHECKER_DIR/_build/default/bin/main.exe"
-export LD_LIBRARY_PATH="/home/pierre/Documents/RLanguage/r-parser/core/tree-sitter/lib/${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+CHECKER_DIR="${CHECKER_DIR:-/home/pierre/Documents/Rlanguage/r-c-typing}"
+CHECKER="${CHECKER:-$CHECKER_DIR/_build/default/bin/main.exe}"
+TS_LIB_DIR="${TS_LIB_DIR:-/home/pierre/Documents/Rlanguage/r-parser/core/tree-sitter/lib}"
+export LD_LIBRARY_PATH="${TS_LIB_DIR}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
 mkdir -p "$OUT_DIR"
 

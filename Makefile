@@ -3,7 +3,7 @@ CHECKER     := $(CHECKER_DIR)/_build/default/bin/main.exe
 NPROC       := $(shell nproc)
 TIMEOUT     := 120
 
-.PHONY: all download extract typecheck results discover build-checker clean clean-results
+.PHONY: all download extract typecheck results webpage dashboard discover build-checker clean clean-results
 
 all: results
 
@@ -39,6 +39,14 @@ typecheck: work/.typecheck_done
 # --- Parse output into CSV ---
 results: work/.typecheck_done scripts/parse_output.R
 	Rscript scripts/parse_output.R work/raw_output results
+
+# --- Generate summary webpage ---
+webpage: results
+	Rscript scripts/generate_webpage.R results results/index.html
+
+# --- Open dashboard in browser ---
+dashboard: webpage
+	xdg-open results/index.html
 
 # --- Optional: discover packages with native code ---
 discover:

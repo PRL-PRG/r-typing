@@ -19,11 +19,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install R and GNU parallel
-        run: |
-          apt-get update -qq
-          apt-get install -y --no-install-recommends r-base parallel
-
       - name: Download source tarballs
         run: make download
 

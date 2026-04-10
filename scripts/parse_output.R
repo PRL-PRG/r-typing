@@ -47,12 +47,14 @@ parse_output <- function(lines) {
     }
 
     # Check for untypeable pattern:
-    #   func_name:
+    #   func_name:          (or .C(func_name):)
     #   untypeable: error_title
     #   [optional detail lines]
-    if (grepl("^[A-Za-z_.][A-Za-z0-9_.]*:$", line) &&
-        i + 1 <= n && grepl("^untypeable:", lines[i + 1])) {
-      func_name <- sub(":$", "", line)
+    is_func_header <- grepl("^[A-Za-z_.][A-Za-z0-9_.]*:$", line) ||
+                      grepl("^\\.C\\([A-Za-z_.][A-Za-z0-9_.]*\\):$", line)
+    if (is_func_header && i + 1 <= n && grepl("^untypeable:", lines[i + 1])) {
+      m <- regmatches(line, regexec("^\\.C\\(([A-Za-z_.][A-Za-z0-9_.]*)\\):$", line))[[1]]
+      func_name <- if (length(m) == 2) m[2] else sub(":$", "", line)
       error_title <- sub("^untypeable: ", "", lines[i + 1])
       i <- i + 2
 
@@ -62,6 +64,7 @@ parse_output <- function(lines) {
       detail_lines <- character()
       while (i <= n &&
              !grepl("^[A-Za-z_.][A-Za-z0-9_.]*:$", lines[i]) &&
+             !grepl("^\\.C\\([A-Za-z_.][A-Za-z0-9_.]*\\):$", lines[i]) &&
              !is_noise(lines[i])) {
         detail_lines <- c(detail_lines, lines[i])
         i <- i + 1
@@ -79,9 +82,13 @@ parse_output <- function(lines) {
     }
 
     # Check for typed function pattern: func_name: type_signature
+    # Also handles .C(func_name): type_signature
     # The type signature part contains at least one non-whitespace character after ": "
-    if (grepl("^[A-Za-z_.][A-Za-z0-9_.]*: .+", line)) {
-      parts <- regmatches(line, regexec("^([A-Za-z_.][A-Za-z0-9_.]*): (.+)$", line))[[1]]
+    if (grepl("^([A-Za-z_.][A-Za-z0-9_.]*|\\.C\\([A-Za-z_.][A-Za-z0-9_.]*\\)): .+", line)) {
+      parts <- regmatches(line, regexec("^\\.C\\(([A-Za-z_.][A-Za-z0-9_.]*)\\): (.+)$", line))[[1]]
+      if (length(parts) < 3) {
+        parts <- regmatches(line, regexec("^([A-Za-z_.][A-Za-z0-9_.]*): (.+)$", line))[[1]]
+      }
       if (length(parts) == 3) {
         functions[[length(functions) + 1]] <- data.frame(
           function_name = parts[2],

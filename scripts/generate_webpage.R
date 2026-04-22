@@ -122,14 +122,31 @@ h('</div>')
 
 # Per-package table
 h('<h2>Per-package results</h2>')
-h('<table><thead><tr><th>Package</th><th>Entrypoints</th><th>.Call</th><th>.C</th><th>.Fortran</th><th>.External</th><th>EP typing progress</th><th>Functions analysed</th><th>Typing progress</th><th>Status</th></tr></thead><tbody>')
+
+# Pick one decimal precision for the elapsed-time column so all rows are
+# comparable. Finer precision for small values, coarser for big ones.
+max_elapsed <- suppressWarnings(max(summary_df$elapsed_sec, na.rm = TRUE))
+time_digits <- if (!is.finite(max_elapsed)) {
+  1L
+} else if (max_elapsed < 10) {
+  2L
+} else if (max_elapsed < 100) {
+  1L
+} else {
+  0L
+}
+time_fmt <- paste0("%.", time_digits, "f s")
+fmt_time <- function(t) if (is.na(t)) '<span class="na">&mdash;</span>' else sprintf(time_fmt, t)
+
+h('<table><thead><tr><th>Package</th><th>Entrypoints</th><th>.Call</th><th>.C</th><th>.Fortran</th><th>.External</th><th>EP typing progress</th><th>Functions analysed</th><th>Typing progress</th><th>Typing time</th><th>Status</th></tr></thead><tbody>')
 for (i in seq_len(nrow(summary_df))) {
   r <- summary_df[i, ]
   ep <- r$ep_call + r$ep_c + r$ep_fortran + r$ep_external
   badge <- if (r$crashed) '<span class="badge badge-crash">crashed</span>' else '<span class="badge badge-ok">OK</span>'
-  h(sprintf('<tr><td class="pkg">%s</td><td class="num">%d</td><td class="num">%d</td><td class="num">%d</td><td class="num">%d</td><td class="num">%d</td><td>%s</td><td class="num">%d</td><td>%s</td><td>%s</td></tr>',
+  h(sprintf('<tr><td class="pkg">%s</td><td class="num">%d</td><td class="num">%d</td><td class="num">%d</td><td class="num">%d</td><td class="num">%d</td><td>%s</td><td class="num">%d</td><td>%s</td><td class="num">%s</td><td>%s</td></tr>',
     esc(r$package), ep, r$ep_call, r$ep_c, r$ep_fortran, r$ep_external,
-    pct_bar(r$n_ep_typed, ep), r$n_functions, pct_bar(r$n_typed, r$n_functions), badge))
+    pct_bar(r$n_ep_typed, ep), r$n_functions, pct_bar(r$n_typed, r$n_functions),
+    fmt_time(r$elapsed_sec), badge))
 }
 h('</tbody></table>')
 

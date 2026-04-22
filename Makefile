@@ -1,7 +1,7 @@
 CHECKER_DIR ?= /home/pierre/Documents/RLanguage/r-c-typing
 CHECKER     ?= $(CHECKER_DIR)/_build/default/bin/main.exe
 NPROC       := $(shell nproc)
-TIMEOUT     := 120
+TIMEOUT     := 6000
 
 TS_LIB_DIR  ?= /home/pierre/Documents/RLanguage/r-parser/core/tree-sitter/lib
 

@@ -58,14 +58,10 @@ parse_output <- function(lines) {
       error_title <- sub("^untypeable: ", "", lines[i + 1])
       i <- i + 2
 
-      # Collect detail lines until next function block or noise.
-      # Only break on "name:" (colon at EOL) which starts a new untypeable block,
-      # not on "name: value" detail lines like "name: Rf_asLogical".
+      # Collect detail lines (name:, argument:, function:) until we hit
+      # something that isn't a known detail prefix.
       detail_lines <- character()
-      while (i <= n &&
-             !grepl("^[A-Za-z_.][A-Za-z0-9_.]*:$", lines[i]) &&
-             !grepl("^\\.C\\([A-Za-z_.][A-Za-z0-9_.]*\\):$", lines[i]) &&
-             !is_noise(lines[i])) {
+      while (i <= n && grepl("^(name|argument|function): ", lines[i])) {
         detail_lines <- c(detail_lines, lines[i])
         i <- i + 1
       }
@@ -149,9 +145,15 @@ for (exit_file in exit_files) {
     }
     error_message <- if (length(exception_line) > 0) {
       trimws(exception_line[1])
+    } else if (exit_code == 137) {
+      "killed (SIGKILL, likely timeout or OOM)"
+    } else if (exit_code == 124) {
+      "killed (timeout)"
     } else if (length(out_lines) > 0) {
-      # Fall back to first non-empty, non-header line
-      first <- out_lines[nchar(trimws(out_lines)) > 0 & !grepl("^Typing (package|file):", out_lines)]
+      # Fall back to first non-noise, non-indented line (indented lines are
+      # typically entry-point names or call-stack fragments, not error messages).
+      first <- out_lines[!vapply(out_lines, is_noise, logical(1)) &
+                           !grepl("^\\s", out_lines)]
       if (length(first) > 0) trimws(first[1]) else NA_character_
     } else {
       NA_character_

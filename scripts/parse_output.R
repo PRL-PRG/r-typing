@@ -46,16 +46,17 @@ parse_output <- function(lines) {
       next
     }
 
-    # Check for untypeable pattern:
+    # Check for untypeable or timeout pattern:
     #   func_name:          (or .C(func_name):)
-    #   untypeable: error_title
+    #   untypeable: error_title    -- or --    timeout: ...exceeded N seconds
     #   [optional detail lines]
     is_func_header <- grepl("^[A-Za-z_.][A-Za-z0-9_.]*:$", line) ||
                       grepl("^\\.C\\([A-Za-z_.][A-Za-z0-9_.]*\\):$", line)
-    if (is_func_header && i + 1 <= n && grepl("^untypeable:", lines[i + 1])) {
+    if (is_func_header && i + 1 <= n && grepl("^(untypeable|timeout):", lines[i + 1])) {
       m <- regmatches(line, regexec("^\\.C\\(([A-Za-z_.][A-Za-z0-9_.]*)\\):$", line))[[1]]
       func_name <- if (length(m) == 2) m[2] else sub(":$", "", line)
-      error_title <- sub("^untypeable: ", "", lines[i + 1])
+      status <- if (grepl("^timeout:", lines[i + 1])) "timeout" else "untypeable"
+      error_title <- sub("^(untypeable|timeout): ", "", lines[i + 1])
       i <- i + 2
 
       # Collect detail lines (name:, argument:, function:) until we hit
@@ -68,7 +69,7 @@ parse_output <- function(lines) {
 
       functions[[length(functions) + 1]] <- data.frame(
         function_name = func_name,
-        status = "untypeable",
+        status = status,
         type_sig = NA_character_,
         error_title = error_title,
         error_detail = if (length(detail_lines) > 0) paste(detail_lines, collapse = "\n") else NA_character_,
@@ -204,6 +205,7 @@ for (exit_file in exit_files) {
   n_functions <- nrow(funcs)
   n_typed <- sum(funcs$status == "typed")
   n_untypeable <- sum(funcs$status == "untypeable")
+  n_timeout <- sum(funcs$status == "timeout")
   pct_typed <- if (n_functions > 0) round(100 * n_typed / n_functions, 1) else NA_real_
 
   # Count how many entry points were typed successfully
@@ -220,6 +222,7 @@ for (exit_file in exit_files) {
     n_typed = n_typed,
     n_ep_typed = n_ep_typed,
     n_untypeable = n_untypeable,
+    n_timeout = n_timeout,
     pct_typed = pct_typed,
     elapsed_sec = elapsed,
     exit_code = exit_code,

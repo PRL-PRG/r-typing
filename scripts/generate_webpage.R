@@ -22,6 +22,7 @@ n_ok          <- n_packages - n_crashed
 total_functions  <- sum(summary_df$n_functions, na.rm = TRUE)
 total_typed      <- sum(summary_df$n_typed, na.rm = TRUE)
 total_untypeable <- sum(summary_df$n_untypeable, na.rm = TRUE)
+total_timeout    <- if ("n_timeout" %in% names(summary_df)) sum(summary_df$n_timeout, na.rm = TRUE) else 0L
 total_ep_call    <- sum(summary_df$ep_call, na.rm = TRUE)
 total_ep_c       <- sum(summary_df$ep_c, na.rm = TRUE)
 total_ep_fortran <- sum(summary_df$ep_fortran, na.rm = TRUE)
@@ -32,11 +33,14 @@ total_ep_typed   <- sum(summary_df$n_ep_typed, na.rm = TRUE)
 pct_overall    <- if (total_functions > 0) round(100 * total_typed / total_functions, 1) else 0
 pct_ep_typed   <- if (total_ep > 0) round(100 * total_ep_typed / total_ep, 1) else 0
 
-# Error categories
+# Error categories (includes both untypeable errors and timeouts)
 error_cats <- if (nrow(functions_df) > 0) {
-  ut <- functions_df[functions_df$status == "untypeable", ]
+  ut <- functions_df[functions_df$status %in% c("untypeable", "timeout"), ]
   if (nrow(ut) > 0) {
-    tbl <- sort(table(ut$error_title), decreasing = TRUE)
+    # Group all timeouts into a single "timeout" bucket regardless of the
+    # specific duration reported in the message.
+    cat_label <- ifelse(ut$status == "timeout", "timeout", ut$error_title)
+    tbl <- sort(table(cat_label), decreasing = TRUE)
     data.frame(category = names(tbl), count = as.integer(tbl), stringsAsFactors = FALSE)
   } else {
     data.frame(category = character(0), count = integer(0))
@@ -117,6 +121,7 @@ h(sprintf('<div class="stat-card"><div class="value">%d</div><div class="label">
 h(sprintf('<div class="stat-card"><div class="value">%.1f%%</div><div class="label">Analysed functions typed</div></div>', pct_overall))
 h(sprintf('<div class="stat-card"><div class="value">%.1f%%</div><div class="label">Entrypoints typed</div><div class="ep-breakdown">%d / %d</div></div>',
   pct_ep_typed, total_ep_typed, total_ep))
+h(sprintf('<div class="stat-card"><div class="value">%d</div><div class="label">Functions timed out</div></div>', total_timeout))
 h(sprintf('<div class="stat-card"><div class="value">%d / %d</div><div class="label">Packages without crash</div></div>', n_ok, n_packages))
 h('</div>')
 
@@ -138,21 +143,22 @@ time_digits <- if (!is.finite(max_elapsed)) {
 time_fmt <- paste0("%.", time_digits, "f s")
 fmt_time <- function(t) if (is.na(t)) '<span class="na">&mdash;</span>' else sprintf(time_fmt, t)
 
-h('<table><thead><tr><th>Package</th><th>Entrypoints</th><th>.Call</th><th>.C</th><th>.Fortran</th><th>.External</th><th>EP typing progress</th><th>Functions analysed</th><th>Typing progress</th><th>Typing time</th><th>Status</th></tr></thead><tbody>')
+h('<table><thead><tr><th>Package</th><th>Entrypoints</th><th>.Call</th><th>.C</th><th>.Fortran</th><th>.External</th><th>EP typing progress</th><th>Functions analysed</th><th>Timed out</th><th>Typing progress</th><th>Typing time</th><th>Status</th></tr></thead><tbody>')
 for (i in seq_len(nrow(summary_df))) {
   r <- summary_df[i, ]
   ep <- r$ep_call + r$ep_c + r$ep_fortran + r$ep_external
+  n_to <- if ("n_timeout" %in% names(r)) r$n_timeout else 0L
   badge <- if (r$crashed) '<span class="badge badge-crash">crashed</span>' else '<span class="badge badge-ok">OK</span>'
-  h(sprintf('<tr><td class="pkg">%s</td><td class="num">%d</td><td class="num">%d</td><td class="num">%d</td><td class="num">%d</td><td class="num">%d</td><td>%s</td><td class="num">%d</td><td>%s</td><td class="num">%s</td><td>%s</td></tr>',
+  h(sprintf('<tr><td class="pkg">%s</td><td class="num">%d</td><td class="num">%d</td><td class="num">%d</td><td class="num">%d</td><td class="num">%d</td><td>%s</td><td class="num">%d</td><td class="num">%d</td><td>%s</td><td class="num">%s</td><td>%s</td></tr>',
     esc(r$package), ep, r$ep_call, r$ep_c, r$ep_fortran, r$ep_external,
-    pct_bar(r$n_ep_typed, ep), r$n_functions, pct_bar(r$n_typed, r$n_functions),
+    pct_bar(r$n_ep_typed, ep), r$n_functions, n_to, pct_bar(r$n_typed, r$n_functions),
     fmt_time(r$elapsed_sec), badge))
 }
 h('</tbody></table>')
 
 # Error categories
 if (nrow(error_cats) > 0) {
-  h('<h2>Untypeable error categories</h2>')
+  h('<h2>Error and timeout categories</h2>')
   h('<table><thead><tr><th>Error</th><th style="text-align:right">Count</th></tr></thead><tbody>')
   for (i in seq_len(nrow(error_cats))) {
     h(sprintf('<tr class="error-row"><td>%s</td><td class="num">%d</td></tr>',

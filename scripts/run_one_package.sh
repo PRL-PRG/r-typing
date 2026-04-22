@@ -23,8 +23,13 @@ mkdir -p "$OUT_DIR"
 
 cd "$CHECKER_DIR"
 
+TIMEOUT_OPT=()
+if [ -n "${FUN_TIMEOUT:-}" ]; then
+    TIMEOUT_OPT=(--timeout "$FUN_TIMEOUT")
+fi
+
 START=$(date +%s.%N)
-"$CHECKER" ${CHECKER_OPTS-} "$PKG_DIR" > "$OUT_DIR/$PKG_NAME.out" 2>&1
+"$CHECKER" ${CHECKER_OPTS-} "${TIMEOUT_OPT[@]}" "$PKG_DIR" > "$OUT_DIR/$PKG_NAME.out" 2>&1
 EXIT_CODE=$?
 END=$(date +%s.%N)
 

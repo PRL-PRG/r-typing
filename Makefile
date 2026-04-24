@@ -1,12 +1,20 @@
-CHECKER_DIR ?= /home/pierre/Documents/Rlanguage/r-c-typing
+CHECKER_DIR ?= /home/pierre/Documents/RLanguage/r-c-typing
 CHECKER     ?= $(CHECKER_DIR)/_build/default/bin/main.exe
 NPROC       := $(shell nproc)
 TIMEOUT     := 6000
 FUN_TIMEOUT ?= 20
 
-TS_LIB_DIR  ?= /home/pierre/Documents/Rlanguage/r-parser/core/tree-sitter/lib
+TS_LIB_DIR  ?= /home/pierre/Documents/RLanguage/r-parser/core/tree-sitter/lib
 
-export CHECKER_DIR CHECKER TS_LIB_DIR FUN_TIMEOUT
+# Pass arbitrary flags to the checker. Set FALLBACK=1 to add
+# --fallback-c-signature: when full-body inference fails, bind the function at
+# its declared C signature so callers don't cascade as "unbound variable".
+CHECKER_OPTS ?=
+ifeq ($(FALLBACK),1)
+CHECKER_OPTS += --fallback-c-signature
+endif
+
+export CHECKER_DIR CHECKER TS_LIB_DIR FUN_TIMEOUT CHECKER_OPTS
 
 .PHONY: all download extract typecheck results webpage dashboard discover build-checker clean clean-results
 

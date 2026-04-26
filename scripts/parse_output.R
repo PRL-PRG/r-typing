@@ -28,6 +28,7 @@ noise_re <- paste0(
   "|Native calls found",
   "|C source files found",
   "|Creating fresh variable:",
+  "|Warning:",
   "|r-c-typing:",
   "|\\s+(?:Called from|Raised at|Failure)",
   "|\\s*$)"

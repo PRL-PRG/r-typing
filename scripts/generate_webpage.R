@@ -280,7 +280,6 @@ common_style <- function() {
     'details summary:hover { text-decoration: underline; }',
     'details pre.source { font-family: "JetBrains Mono", monospace; font-size: .8rem; background: #f8f8f8; padding: .5rem; border-radius: 4px; overflow-x: auto; line-height: 1.4; margin-top: .25rem; max-height: 600px; overflow-y: auto; }',
     'details .source-meta { color: var(--muted); font-size: .75rem; margin-top: .25rem; }',
-    '.was-tag { display: inline-block; font-size: .7rem; padding: .1em .4em; border-radius: 3px; margin-left: .5em; background: #f0f0f0; color: var(--muted); font-family: "JetBrains Mono", monospace; }',
     '.back-link { display: inline-block; margin-bottom: 1rem; color: var(--accent); text-decoration: none; font-size: .9rem; }',
     '.back-link:hover { text-decoration: underline; }',
     'footer { margin-top: 3rem; text-align: center; color: var(--muted); font-size: .8rem; }',
@@ -302,29 +301,6 @@ h('</head><body>')
 h('<h1><span class="r">R</span> we type yet?</h1>')
 h(sprintf('<p class="subtitle">Type-checking results for %d CRAN packages &mdash; generated %s</p>',
   n_packages, format(Sys.time(), "%Y-%m-%d %H:%M")))
-
-# Progress strip vs baseline
-if (!is.null(baseline_dir)) {
-  b_total_typed     <- sum(b_summary_df$n_typed,      na.rm = TRUE)
-  b_total_funcs     <- sum(b_summary_df$n_functions,  na.rm = TRUE)
-  b_total_ep_typed  <- sum(b_summary_df$n_ep_typed,   na.rm = TRUE)
-  b_total_ut        <- sum(b_summary_df$n_untypeable, na.rm = TRUE)
-  b_total_to        <- if ("n_timeout" %in% names(b_summary_df)) sum(b_summary_df$n_timeout, na.rm = TRUE) else 0L
-  err_unbound_now   <- as.integer(err_now[ "unbound variable"]); if (is.na(err_unbound_now)) err_unbound_now <- 0L
-  err_unbound_base  <- as.integer(err_base["unbound variable"]); if (is.na(err_unbound_base)) err_unbound_base <- 0L
-  err_app_now       <- as.integer(err_now[ "untypeable application"]); if (is.na(err_app_now)) err_app_now <- 0L
-  err_app_base      <- as.integer(err_base["untypeable application"]); if (is.na(err_app_base)) err_app_base <- 0L
-
-  h(sprintf('<h2>Progress vs <code>%s</code></h2>', esc(baseline_dir)))
-  h('<div class="stats">')
-  h(progress_card("Functions typed",       b_total_typed,    total_typed,     +1))
-  h(progress_card("Entry points typed",    b_total_ep_typed, total_ep_typed,  +1))
-  h(progress_card("Untypeable",            b_total_ut,       total_untypeable, -1))
-  h(progress_card("Timed out",             b_total_to,       total_timeout,   -1))
-  h(progress_card("Unbound variables",     err_unbound_base, err_unbound_now, -1))
-  h(progress_card("Untypeable applications", err_app_base,   err_app_now,     -1))
-  h('</div>')
-}
 
 # Stat cards
 h('<div class="stats">')
@@ -351,7 +327,7 @@ b_typed_by_pkg <- if (!is.null(b_summary_df)) {
   setNames(b_summary_df$n_typed, b_summary_df$package)
 } else NULL
 
-extra_th <- if (!is.null(baseline_dir)) '<th>&Delta; typed</th>' else ''
+extra_th <- if (!is.null(baseline_dir)) '<th>Change</th>' else ''
 h('<table><thead><tr>',
   '<th>Package</th><th>Entrypoints</th><th>.Call</th><th>.C</th><th>.Fortran</th><th>.External</th>',
   '<th>EP typing progress</th><th>Functions analysed</th>', extra_th,
@@ -450,20 +426,10 @@ status_badge <- function(status) {
   )
 }
 
-# pre-index baseline functions by (pkg, name) for status-change tags
-b_fn_status_by_key <- if (!is.null(b_functions_df)) {
-  key <- paste(b_functions_df$package, b_functions_df$function_name, sep = "\031")
-  setNames(b_functions_df$status, key)
-} else NULL
-
-render_function_block <- function(pkg, name, status, type_sig, error_title, error_detail, with_source, baseline_status) {
+render_function_block <- function(pkg, name, status, type_sig, error_title, error_detail, with_source) {
   hh <- character()
-  was_tag <- ""
-  if (!is.null(baseline_status) && !is.na(baseline_status) && nzchar(baseline_status) && baseline_status != status) {
-    was_tag <- sprintf('<span class="was-tag">was: %s</span>', esc(baseline_status))
-  }
-  hh <- c(hh, sprintf('<div class="func-list"><h3>%s %s %s</h3>',
-    esc(name), status_badge(status), was_tag))
+  hh <- c(hh, sprintf('<div class="func-list"><h3>%s %s</h3>',
+    esc(name), status_badge(status)))
   if (status == "typed") {
     if (!is.na(type_sig) && nzchar(type_sig)) {
       hh <- c(hh, sprintf('<div class="type-sig">%s</div>', esc(type_sig)))
@@ -511,28 +477,6 @@ write_package_page <- function(pkg) {
       s$n_functions, s$n_typed, s$n_untypeable, if ("n_timeout" %in% names(s)) s$n_timeout else 0L,
       ep_total, s$n_ep_typed))
 
-  # Per-package delta vs baseline
-  if (!is.null(b_summary_df)) {
-    bs <- b_summary_df[b_summary_df$package == pkg, , drop = FALSE]
-    if (nrow(bs) >= 1) {
-      bs <- bs[1, ]
-      d_typed <- s$n_typed - bs$n_typed
-      d_ut    <- s$n_untypeable - bs$n_untypeable
-      d_to    <- (if ("n_timeout" %in% names(s)) s$n_timeout else 0L) -
-                 (if ("n_timeout" %in% names(bs)) bs$n_timeout else 0L)
-      ph <- c(ph,
-        '<div class="stats">',
-        progress_card("Typed", bs$n_typed, s$n_typed, +1),
-        progress_card("Untypeable", bs$n_untypeable, s$n_untypeable, -1),
-        progress_card("Timed out",
-          if ("n_timeout" %in% names(bs)) bs$n_timeout else 0L,
-          if ("n_timeout" %in% names(s))  s$n_timeout  else 0L,
-          -1),
-        '</div>'
-      )
-    }
-  }
-
   # Entry points section
   ep_rows <- rows[rows$function_name %in% ep_names, , drop = FALSE]
   if (length(ep_names) > 0) {
@@ -545,10 +489,8 @@ write_package_page <- function(pkg) {
         next
       }
       r <- row[1, ]
-      bkey <- paste(pkg, nm, sep = "\031")
-      bs   <- if (!is.null(b_fn_status_by_key) && bkey %in% names(b_fn_status_by_key)) b_fn_status_by_key[[bkey]] else NULL
       ph <- c(ph, render_function_block(pkg, nm, r$status, r$type_sig,
-        r$error_title, r$error_detail, with_source = TRUE, baseline_status = bs))
+        r$error_title, r$error_detail, with_source = TRUE))
     }
   }
 
@@ -558,21 +500,12 @@ write_package_page <- function(pkg) {
   if (nrow(rows) == 0) {
     ph <- c(ph, '<p class="na">No functions recorded.</p>')
   } else {
-    head_extra <- if (!is.null(baseline_dir)) '<th>was</th>' else ''
     ph <- c(ph, '<table><thead><tr><th>Function</th><th>Status</th>',
-      head_extra, '<th>Type / error</th></tr></thead><tbody>')
-    # sort: typed first, then untypeable, then timeout
+      '<th>Type / error</th></tr></thead><tbody>')
     ord <- order(match(rows$status, c("typed", "untypeable", "timeout")), rows$function_name)
     rows <- rows[ord, , drop = FALSE]
     for (i in seq_len(nrow(rows))) {
       r <- rows[i, ]
-      bkey <- paste(pkg, r$function_name, sep = "\031")
-      bs   <- if (!is.null(b_fn_status_by_key) && bkey %in% names(b_fn_status_by_key)) b_fn_status_by_key[[bkey]] else NA_character_
-      was_cell <- if (!is.null(baseline_dir)) {
-        if (is.na(bs)) '<td><span class="na">new</span></td>'
-        else if (bs == r$status) '<td><span class="na">same</span></td>'
-        else sprintf('<td><span class="was-tag">%s</span></td>', esc(bs))
-      } else ""
       detail_cell <- if (r$status == "typed") {
         if (!is.na(r$type_sig)) sprintf('<span class="type-sig">%s</span>', esc(r$type_sig)) else ""
       } else {
@@ -582,8 +515,8 @@ write_package_page <- function(pkg) {
               else ""
         paste0(e1, e2)
       }
-      ph <- c(ph, sprintf('<tr><td class="pkg">%s</td><td>%s</td>%s<td>%s</td></tr>',
-        esc(r$function_name), status_badge(r$status), was_cell, detail_cell))
+      ph <- c(ph, sprintf('<tr><td class="pkg">%s</td><td>%s</td><td>%s</td></tr>',
+        esc(r$function_name), status_badge(r$status), detail_cell))
     }
     ph <- c(ph, '</tbody></table>')
   }

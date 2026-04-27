@@ -261,6 +261,11 @@ common_style <- function() {
     '.badge-untypeable { background: var(--bad-bg); color: var(--bad); }',
     '.badge-timeout { background: #fef3c7; color: #92400e; }',
     '.badge-crash { background: var(--bad-bg); color: var(--bad); }',
+    '.badge-entry { background: #e0e7ff; color: #3730a3; }',
+    '.filters { display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; padding: .75rem 1rem; background: #fff; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 1rem; position: sticky; top: 0; z-index: 10; }',
+    '.filters label { font-size: .9rem; user-select: none; }',
+    '.filters input[type="search"] { padding: .25rem .5rem; border: 1px solid var(--border); border-radius: 4px; font: inherit; min-width: 12rem; }',
+    '.filters .count { margin-left: auto; color: var(--muted); font-family: "JetBrains Mono", monospace; font-size: .85rem; }',
     '.delta { font-family: "JetBrains Mono", monospace; font-weight: 600; padding: .1em .4em; border-radius: 4px; font-size: .85rem; }',
     '.delta-good { background: var(--good-bg); color: var(--good); }',
     '.delta-bad  { background: var(--bad-bg);  color: var(--bad); }',
@@ -426,10 +431,14 @@ status_badge <- function(status) {
   )
 }
 
-render_function_block <- function(pkg, name, status, type_sig, error_title, error_detail, with_source) {
+render_function_block <- function(pkg, name, status, type_sig, error_title, error_detail,
+                                  is_entry = FALSE, with_source = TRUE) {
   hh <- character()
-  hh <- c(hh, sprintf('<div class="func-list"><h3>%s %s</h3>',
-    esc(name), status_badge(status)))
+  entry_attr <- if (is_entry) "true" else "false"
+  hh <- c(hh, sprintf('<div class="func-list" data-status="%s" data-entry="%s" data-name="%s"><h3>%s %s%s</h3>',
+    esc(status), entry_attr, esc(tolower(name)), esc(name),
+    status_badge(status),
+    if (is_entry) ' <span class="badge badge-entry">entry</span>' else ''))
   if (status == "typed") {
     if (!is.na(type_sig) && nzchar(type_sig)) {
       hh <- c(hh, sprintf('<div class="type-sig">%s</div>', esc(type_sig)))
@@ -477,51 +486,79 @@ write_package_page <- function(pkg) {
       s$n_functions, s$n_typed, s$n_untypeable, if ("n_timeout" %in% names(s)) s$n_timeout else 0L,
       ep_total, s$n_ep_typed))
 
-  # Entry points section
-  ep_rows <- rows[rows$function_name %in% ep_names, , drop = FALSE]
-  if (length(ep_names) > 0) {
-    ph <- c(ph, sprintf('<h2>Entry points <small>%d</small></h2>', length(ep_names)))
-    # Render in the order ep_names appears (preserve raw output order)
-    for (nm in ep_names) {
-      row <- ep_rows[ep_rows$function_name == nm, , drop = FALSE]
-      if (nrow(row) == 0) {
-        ph <- c(ph, sprintf('<div class="func-list"><h3>%s <span class="badge">unknown</span></h3><div class="error-line">no record in functions.csv (likely the entry point itself was filtered)</div></div>', esc(nm)))
-        next
-      }
-      r <- row[1, ]
-      ph <- c(ph, render_function_block(pkg, nm, r$status, r$type_sig,
-        r$error_title, r$error_detail, with_source = TRUE))
-    }
-  }
+  # Unified function list with filter toolbar.
+  ep_set <- ep_names
+  ep_in_csv <- ep_set[ep_set %in% rows$function_name]
+  ep_missing <- setdiff(ep_set, ep_in_csv)
+  total_cards <- nrow(rows) + length(ep_missing)
 
-  # All functions section (excluding ones already shown as EPs to keep it compact;
-  # but keep them for searchability — show all in a separate compact table.)
-  ph <- c(ph, sprintf('<h2>All functions <small>%d</small></h2>', nrow(rows)))
-  if (nrow(rows) == 0) {
+  ph <- c(ph, sprintf('<h2>Functions <small>%d</small></h2>', total_cards))
+  ph <- c(ph,
+    '<div class="filters">',
+    '<label><input type="checkbox" id="flt-ep"> Entry points only</label>',
+    '<label><input type="checkbox" id="flt-typed" checked> typed</label>',
+    '<label><input type="checkbox" id="flt-untypeable" checked> untypeable</label>',
+    '<label><input type="checkbox" id="flt-timeout" checked> timeout</label>',
+    '<input type="search" id="flt-name" placeholder="name…">',
+    sprintf('<span class="count"><span id="flt-count">%d</span> / %d</span>', total_cards, total_cards),
+    '</div>')
+
+  if (total_cards == 0) {
     ph <- c(ph, '<p class="na">No functions recorded.</p>')
   } else {
-    ph <- c(ph, '<table><thead><tr><th>Function</th><th>Status</th>',
-      '<th>Type / error</th></tr></thead><tbody>')
-    ord <- order(match(rows$status, c("typed", "untypeable", "timeout")), rows$function_name)
-    rows <- rows[ord, , drop = FALSE]
-    for (i in seq_len(nrow(rows))) {
-      r <- rows[i, ]
-      detail_cell <- if (r$status == "typed") {
-        if (!is.na(r$type_sig)) sprintf('<span class="type-sig">%s</span>', esc(r$type_sig)) else ""
-      } else {
-        e1 <- if (!is.na(r$error_title)) sprintf('<span class="error-line">%s</span>', esc(r$error_title)) else ""
-        e2 <- if (!is.na(r$error_detail) && nzchar(r$error_detail))
-                sprintf('<details class="error-detail"><summary>detail</summary><pre>%s</pre></details>', esc(r$error_detail))
-              else ""
-        paste0(e1, e2)
+    if (nrow(rows) > 0) {
+      ord <- order(match(rows$status, c("typed", "untypeable", "timeout")), rows$function_name)
+      rows <- rows[ord, , drop = FALSE]
+      for (i in seq_len(nrow(rows))) {
+        r <- rows[i, ]
+        ph <- c(ph, render_function_block(pkg, r$function_name, r$status,
+          r$type_sig, r$error_title, r$error_detail,
+          is_entry = r$function_name %in% ep_set,
+          with_source = TRUE))
       }
-      ph <- c(ph, sprintf('<tr><td class="pkg">%s</td><td>%s</td><td>%s</td></tr>',
-        esc(r$function_name), status_badge(r$status), detail_cell))
     }
-    ph <- c(ph, '</tbody></table>')
+    # Entry points missing from functions.csv: render as 'unknown' cards.
+    for (nm in ep_missing) {
+      ph <- c(ph, sprintf(
+        '<div class="func-list" data-status="unknown" data-entry="true" data-name="%s"><h3>%s <span class="badge">unknown</span> <span class="badge badge-entry">entry</span></h3><div class="error-line">no record in functions.csv (likely the entry point itself was filtered)</div></div>',
+        esc(tolower(nm)), esc(nm)))
+    }
   }
 
   ph <- c(ph, '<footer><a href="../index.html">&larr; all packages</a></footer>',
+    '<script>',
+    '(function () {',
+    '  const ep = document.getElementById("flt-ep");',
+    '  const stat = {',
+    '    typed: document.getElementById("flt-typed"),',
+    '    untypeable: document.getElementById("flt-untypeable"),',
+    '    timeout: document.getElementById("flt-timeout"),',
+    '  };',
+    '  const nameInput = document.getElementById("flt-name");',
+    '  const cards = document.querySelectorAll(".func-list[data-status]");',
+    '  const counter = document.getElementById("flt-count");',
+    '  function apply() {',
+    '    const epOnly = ep.checked;',
+    '    const q = (nameInput.value || "").toLowerCase();',
+    '    let visible = 0;',
+    '    cards.forEach(c => {',
+    '      const s = c.dataset.status;',
+    '      const e = c.dataset.entry === "true";',
+    '      const n = c.dataset.name;',
+    '      const okEp = !epOnly || e;',
+    '      const okStat = s === "unknown" || (stat[s] && stat[s].checked);',
+    '      const okName = !q || n.indexOf(q) !== -1;',
+    '      const show = okEp && okStat && okName;',
+    '      c.style.display = show ? "" : "none";',
+    '      if (show) visible++;',
+    '    });',
+    '    counter.textContent = visible;',
+    '  }',
+    '  [ep, stat.typed, stat.untypeable, stat.timeout].forEach(el => el.addEventListener("change", apply));',
+    '  nameInput.addEventListener("input", apply);',
+    '  apply();',
+    '})();',
+    '</script>',
     '</body></html>')
 
   writeLines(ph, file.path(pkg_dir, paste0(pkg, ".html")))

@@ -42,6 +42,19 @@ sources_root <- "work/sources"
 pkg_dir <- file.path(dirname(output_file), "pkg")
 dir.create(pkg_dir, recursive = TRUE, showWarnings = FALSE)
 
+# Vendor Prism (syntax highlighter) assets next to the generated HTML.
+# Sourced from assets/ at repo root; script is expected to run with cwd = repo root.
+assets_dst <- file.path(dirname(output_file), "assets")
+dir.create(assets_dst, recursive = TRUE, showWarnings = FALSE)
+for (f in c("prism.js", "prism.css")) {
+  src <- file.path("assets", f)
+  if (file.exists(src)) file.copy(src, file.path(assets_dst, f), overwrite = TRUE)
+}
+
+# Asset reference helpers; prefix is "" for index, "../" for per-package pages.
+prism_head <- function(prefix = "") sprintf('<link rel="stylesheet" href="%sassets/prism.css">', prefix)
+prism_script <- function(prefix = "") sprintf('<script src="%sassets/prism.js" defer></script>', prefix)
+
 # --- Aggregate stats ---
 n_packages    <- nrow(summary_df)
 n_crashed     <- sum(summary_df$crashed == 1)
@@ -206,7 +219,9 @@ source_snippet <- function(pkg, name, max_lines = 200) {
     if (!found_close) end_l <- cap_l
   }
   end_l <- min(end_l, length(lines))
-  list(file = fp, line = start_l, snippet = paste(lines[start_l:end_l], collapse = "\n"))
+  lang <- if (grepl("\\.(cpp|cc|cxx|hpp|hxx)$", fp, ignore.case = TRUE)) "cpp" else "c"
+  list(file = fp, line = start_l, lang = lang,
+       snippet = paste(lines[start_l:end_l], collapse = "\n"))
 }
 
 # --- Entry-point name + calling-convention extraction ---
@@ -304,6 +319,7 @@ common_style <- function() {
     'details summary { cursor: pointer; color: var(--accent); font-size: .85rem; user-select: none; }',
     'details summary:hover { text-decoration: underline; }',
     'details pre.source { font-family: "JetBrains Mono", monospace; font-size: .8rem; background: #f8f8f8; padding: .5rem; border-radius: 4px; overflow-x: auto; line-height: 1.4; margin-top: .25rem; max-height: 600px; overflow-y: auto; }',
+    'details pre.source code[class*="language-"] { font-family: inherit; font-size: inherit; background: transparent; text-shadow: none; }',
     'details .source-meta { color: var(--muted); font-size: .75rem; margin-top: .25rem; }',
     '.back-link { display: inline-block; margin-bottom: 1rem; color: var(--accent); text-decoration: none; font-size: .9rem; }',
     '.back-link:hover { text-decoration: underline; }',
@@ -483,8 +499,8 @@ render_function_block <- function(pkg, name, status, type_sig, error_title, erro
     if (is.null(snip)) {
       hh <- c(hh, '<div class="source-meta"><em>(definition not located in src/)</em></div>')
     } else {
-      hh <- c(hh, sprintf('<details><summary>source</summary><pre class="source">%s</pre><div class="source-meta">%s:%d</div></details>',
-        esc(snip$snippet), esc(snip$file), snip$line))
+      hh <- c(hh, sprintf('<details><summary>source</summary><pre class="source language-%s"><code class="language-%s">%s</code></pre><div class="source-meta">%s:%d</div></details>',
+        snip$lang, snip$lang, esc(snip$snippet), esc(snip$file), snip$line))
     }
   }
   hh <- c(hh, '</div>')
@@ -506,6 +522,7 @@ write_package_page <- function(pkg) {
     '<meta name="viewport" content="width=device-width, initial-scale=1">',
     sprintf('<title>%s &middot; r-typing</title>', esc(pkg)),
     common_style(),
+    prism_head("../"),
     '</head><body>',
     '<a href="../index.html" class="back-link">&larr; all packages</a>',
     sprintf('<h1><span class="r">%s</span></h1>', esc(pkg)),
@@ -591,6 +608,7 @@ write_package_page <- function(pkg) {
     '  apply();',
     '})();',
     '</script>',
+    prism_script("../"),
     '</body></html>')
 
   writeLines(ph, file.path(pkg_dir, paste0(pkg, ".html")))

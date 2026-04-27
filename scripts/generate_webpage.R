@@ -209,20 +209,39 @@ source_snippet <- function(pkg, name, max_lines = 200) {
   list(file = fp, line = start_l, snippet = paste(lines[start_l:end_l], collapse = "\n"))
 }
 
-# --- Entry-point name extraction (lifted from parse_output.R) ---
-parse_ep_names <- function(out_path) {
-  if (!file.exists(out_path)) return(character())
+# --- Entry-point name + calling-convention extraction ---
+# Returns a data.frame with one row per (name, convention) pair. The same name
+# may appear under multiple conventions in pathological cases; the renderer
+# de-dupes when emitting badges.
+parse_ep_table <- function(out_path) {
+  empty <- data.frame(name = character(), convention = character(), stringsAsFactors = FALSE)
+  if (!file.exists(out_path)) return(empty)
   lines <- readLines(out_path, warn = FALSE)
-  ep_names <- character()
   ep_header_idx <- grep("^Entry points for \\.", lines)
+  if (length(ep_header_idx) == 0L) return(empty)
+  names_acc <- character()
+  conv_acc <- character()
   for (hi in ep_header_idx) {
+    conv <- sub("^Entry points for (\\.[A-Za-z]+) convention:$", "\\1", lines[hi])
     j <- hi + 1L
     while (j <= length(lines) && grepl("^\\s+\\S", lines[j])) {
-      ep_names <- c(ep_names, trimws(lines[j]))
+      names_acc <- c(names_acc, trimws(lines[j]))
+      conv_acc <- c(conv_acc, conv)
       j <- j + 1L
     }
   }
-  unique(ep_names)
+  unique(data.frame(name = names_acc, convention = conv_acc, stringsAsFactors = FALSE))
+}
+
+# Convention(s) for a given function name, ordered to match R's calling-
+# convention listing. Returns character(0) when the name is not an entry point.
+ep_conv_for <- function(ep_tbl, name) {
+  if (nrow(ep_tbl) == 0L) return(character())
+  hits <- ep_tbl$convention[ep_tbl$name == name]
+  if (length(hits) == 0L) return(character())
+  conv_order <- c(".Call", ".C", ".Fortran", ".External")
+  hits <- unique(hits)
+  hits[order(match(hits, conv_order), hits)]
 }
 
 # --- Common HTML head/style ---
@@ -262,6 +281,7 @@ common_style <- function() {
     '.badge-timeout { background: #fef3c7; color: #92400e; }',
     '.badge-crash { background: var(--bad-bg); color: var(--bad); }',
     '.badge-entry { background: #e0e7ff; color: #3730a3; }',
+    '.badge-conv { background: #ccfbf1; color: #115e59; font-family: "JetBrains Mono", monospace; }',
     '.filters { display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; padding: .75rem 1rem; background: #fff; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 1rem; position: sticky; top: 0; z-index: 10; }',
     '.filters label { font-size: .9rem; user-select: none; }',
     '.filters input[type="search"] { padding: .25rem .5rem; border: 1px solid var(--border); border-radius: 4px; font: inherit; min-width: 12rem; }',
@@ -432,13 +452,19 @@ status_badge <- function(status) {
 }
 
 render_function_block <- function(pkg, name, status, type_sig, error_title, error_detail,
-                                  is_entry = FALSE, with_source = TRUE) {
+                                  is_entry = FALSE, entry_conv = character(),
+                                  with_source = TRUE) {
   hh <- character()
   entry_attr <- if (is_entry) "true" else "false"
-  hh <- c(hh, sprintf('<div class="func-list" data-status="%s" data-entry="%s" data-name="%s"><h3>%s %s%s</h3>',
-    esc(status), entry_attr, esc(tolower(name)), esc(name),
+  conv_attr <- if (length(entry_conv) > 0L) paste(entry_conv, collapse = ",") else ""
+  conv_badges <- if (length(entry_conv) > 0L) {
+    paste(sprintf(' <span class="badge badge-conv">%s</span>', esc(entry_conv)), collapse = "")
+  } else ""
+  hh <- c(hh, sprintf('<div class="func-list" data-status="%s" data-entry="%s" data-conv="%s" data-name="%s"><h3>%s %s%s%s</h3>',
+    esc(status), entry_attr, esc(conv_attr), esc(tolower(name)), esc(name),
     status_badge(status),
-    if (is_entry) ' <span class="badge badge-entry">entry</span>' else ''))
+    if (is_entry) ' <span class="badge badge-entry">entry</span>' else '',
+    conv_badges))
   if (status == "typed") {
     if (!is.na(type_sig) && nzchar(type_sig)) {
       hh <- c(hh, sprintf('<div class="type-sig">%s</div>', esc(type_sig)))
@@ -467,7 +493,8 @@ render_function_block <- function(pkg, name, status, type_sig, error_title, erro
 
 write_package_page <- function(pkg) {
   rows <- functions_df[functions_df$package == pkg, , drop = FALSE]
-  ep_names <- parse_ep_names(file.path(raw_dir, paste0(pkg, ".out")))
+  ep_tbl <- parse_ep_table(file.path(raw_dir, paste0(pkg, ".out")))
+  ep_names <- unique(ep_tbl$name)
   s <- summary_df[summary_df$package == pkg, , drop = FALSE]
   if (nrow(s) == 0) return(invisible(NULL))
   s <- s[1, ]
@@ -511,17 +538,22 @@ write_package_page <- function(pkg) {
       rows <- rows[ord, , drop = FALSE]
       for (i in seq_len(nrow(rows))) {
         r <- rows[i, ]
+        is_ep <- r$function_name %in% ep_set
         ph <- c(ph, render_function_block(pkg, r$function_name, r$status,
           r$type_sig, r$error_title, r$error_detail,
-          is_entry = r$function_name %in% ep_set,
+          is_entry = is_ep,
+          entry_conv = if (is_ep) ep_conv_for(ep_tbl, r$function_name) else character(),
           with_source = TRUE))
       }
     }
     # Entry points missing from functions.csv: render as 'unknown' cards.
     for (nm in ep_missing) {
+      convs <- ep_conv_for(ep_tbl, nm)
+      conv_attr <- paste(convs, collapse = ",")
+      conv_badges <- paste(sprintf(' <span class="badge badge-conv">%s</span>', esc(convs)), collapse = "")
       ph <- c(ph, sprintf(
-        '<div class="func-list" data-status="unknown" data-entry="true" data-name="%s"><h3>%s <span class="badge">unknown</span> <span class="badge badge-entry">entry</span></h3><div class="error-line">no record in functions.csv (likely the entry point itself was filtered)</div></div>',
-        esc(tolower(nm)), esc(nm)))
+        '<div class="func-list" data-status="unknown" data-entry="true" data-conv="%s" data-name="%s"><h3>%s <span class="badge">unknown</span> <span class="badge badge-entry">entry</span>%s</h3><div class="error-line">no record in functions.csv (likely the entry point itself was filtered)</div></div>',
+        esc(conv_attr), esc(tolower(nm)), esc(nm), conv_badges))
     }
   }
 

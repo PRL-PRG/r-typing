@@ -55,8 +55,8 @@ work/.typecheck_done: work/.extract_done $(CHECKER)
 typecheck: work/.typecheck_done
 
 # --- Snapshot the previous run before regenerating CSVs ---
-# Moves results/ to results.prev/ so the dashboard can pick it up as a baseline.
-# Only runs when results/summary.csv exists (so a fresh checkout is unaffected).
+# Manual target: unconditionally moves results/ to results.prev/. Useful before
+# a known-disruptive checker change ("make snapshot" then iterate).
 snapshot:
 	@if [ -d results ] && [ -f results/summary.csv ]; then \
 	    rm -rf results.prev; \
@@ -65,7 +65,16 @@ snapshot:
 	fi
 
 # --- Parse output into CSV ---
-results: work/.typecheck_done scripts/parse_output.R snapshot
+# Auto-snapshot fires only when typecheck has produced fresher raw_output than
+# the current results/. That way `make webpage` (which depends on results) is a
+# no-op when nothing has changed, and doesn't clobber results.prev/ with a copy
+# of the current run.
+results: work/.typecheck_done scripts/parse_output.R
+	@if [ -f results/summary.csv ] && [ work/.typecheck_done -nt results/summary.csv ]; then \
+	    rm -rf results.prev; \
+	    mv results results.prev; \
+	    echo "Snapshotted previous results -> results.prev/"; \
+	fi
 	Rscript scripts/parse_output.R work/raw_output results
 
 # --- Generate summary webpage ---

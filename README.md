@@ -123,6 +123,8 @@ scripts/
   run_one_package.sh       # Run r-c-typing on one package
   parse_output.R           # Parse raw output into CSV
   generate_webpage.R       # Render results/index.html + results/pkg/*.html
+assets/
+  prism*.{css,js}           # Vendored Prism assets for C syntax highlighting
 work/                      # Generated (gitignored)
   tarballs/                # Downloaded .tar.gz files
   sources/                 # Extracted package directories

@@ -46,14 +46,30 @@ dir.create(pkg_dir, recursive = TRUE, showWarnings = FALSE)
 # Sourced from assets/ at repo root; script is expected to run with cwd = repo root.
 assets_dst <- file.path(dirname(output_file), "assets")
 dir.create(assets_dst, recursive = TRUE, showWarnings = FALSE)
-for (f in c("prism.js", "prism.css")) {
+prism_assets <- c(
+  "prism.css",
+  "prism-core.min.js",
+  "prism-clike.min.js",
+  "prism-c.min.js"
+)
+for (f in prism_assets) {
   src <- file.path("assets", f)
-  if (file.exists(src)) file.copy(src, file.path(assets_dst, f), overwrite = TRUE)
+  if (file.exists(src)) {
+    file.copy(src, file.path(assets_dst, f), overwrite = TRUE)
+  } else {
+    warning(sprintf("missing dashboard asset %s; syntax highlighting may not work", src))
+  }
 }
 
 # Asset reference helpers; prefix is "" for index, "../" for per-package pages.
 prism_head <- function(prefix = "") sprintf('<link rel="stylesheet" href="%sassets/prism.css">', prefix)
-prism_script <- function(prefix = "") sprintf('<script src="%sassets/prism.js" defer></script>', prefix)
+prism_script <- function(prefix = "") {
+  paste(sprintf(
+    '<script src="%sassets/%s" defer></script>',
+    prefix,
+    c("prism-core.min.js", "prism-clike.min.js", "prism-c.min.js")
+  ), collapse = "")
+}
 
 # --- Aggregate stats ---
 n_packages    <- nrow(summary_df)

@@ -17,7 +17,7 @@ jobs:
       image: ghcr.io/programlyrique/r-c-typing:latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Download source tarballs
         run: make download
@@ -32,7 +32,7 @@ jobs:
         run: make results webpage
 
       - name: Upload results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: results-${{ github.run_number }}
           path: results/

@@ -1,0 +1,301 @@
+---
+title: "Type-checker trends across CI runs"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    df_print: paged
+    fig_width: 10
+    fig_height: 6
+params:
+  workflow: "ci.yml"
+  limit: 200
+  cache_dir: "work/artifacts"
+  top_n_packages: 24
+  top_n_categories: 8
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+suppressPackageStartupMessages({
+  library(ggplot2)
+  library(dplyr)
+  library(tidyr)
+  library(jsonlite)
+  library(scales)
+})
+theme_set(theme_minimal(base_size = 11))
+
+cache_dir <- params$cache_dir
+dir.create(cache_dir, recursive = TRUE, showWarnings = FALSE)
+```
+
+This report pulls every successful CI run's `results/` artifact via `gh`, caches it under
+`` `r cache_dir` ``, and plots a time series for each run.
+
+Render with:
+
+```r
+rmarkdown::render("scripts/trends.Rmd",
+                  output_file = "../results/trends.html")
+```
+
+## Fetch artifacts
+
+```{r fetch}
+gh_path <- Sys.which("gh")
+if (!nzchar(gh_path)) {
+  stop("`gh` CLI is required. Install from https://cli.github.com/ and run `gh auth login`.")
+}
+
+runs_raw <- system2(
+  "gh",
+  c("run", "list",
+    "--workflow", params$workflow,
+    "--status", "success",
+    "--limit", as.character(params$limit),
+    "--json", "databaseId,number,createdAt,headSha,headBranch,event"),
+  stdout = TRUE, stderr = TRUE
+)
+runs <- fromJSON(paste(runs_raw, collapse = "\n"))
+runs$ts <- as.POSIXct(runs$createdAt, format = "%Y-%m-%dT%H:%M:%SZ", tz = "UTC")
+runs <- runs[order(runs$ts), , drop = FALSE]
+
+cat(sprintf("Found %d successful runs (newest %s)\n",
+            nrow(runs), format(max(runs$ts))))
+
+# Download each artifact into cache_dir/<run_id>/. Skip if already present.
+# `gh run download` exits non-zero if the artifact has expired or was renamed —
+# we just drop the partial dir and continue.
+for (i in seq_len(nrow(runs))) {
+  rid <- as.character(runs$databaseId[i])
+  rno <- as.character(runs$number[i])
+  dest <- file.path(cache_dir, rid)
+  if (file.exists(file.path(dest, ".downloaded"))) next
+  unlink(dest, recursive = TRUE)
+  dir.create(dest, recursive = TRUE, showWarnings = FALSE)
+  status <- suppressWarnings(system2(
+    "gh",
+    c("run", "download", rid,
+      "-n", paste0("results-", rno),
+      "-D", dest),
+    stdout = FALSE, stderr = FALSE
+  ))
+  if (status == 0L) {
+    file.create(file.path(dest, ".downloaded"))
+  } else {
+    message(sprintf("run %s: artifact unavailable (skipped)", rid))
+    unlink(dest, recursive = TRUE)
+  }
+}
+```
+
+```{r load}
+# upload-artifact@v4+ may extract files at the root of the artifact or under
+# `results/` depending on the action version that produced it. Look in both.
+find_csv <- function(base, name) {
+  candidates <- c(file.path(base, name), file.path(base, "results", name))
+  hit <- candidates[file.exists(candidates)]
+  if (length(hit) == 0L) NA_character_ else hit[[1]]
+}
+
+read_run <- function(rid, ts, run_no, sha, branch) {
+  base <- file.path(cache_dir, as.character(rid))
+  s_path <- find_csv(base, "summary.csv")
+  if (is.na(s_path)) return(NULL)
+  s <- read.csv(s_path, stringsAsFactors = FALSE)
+  if (nrow(s) == 0L) return(NULL)
+  s$run_id <- rid; s$run_no <- run_no; s$ts <- ts
+  s$sha <- sha; s$branch <- branch
+
+  f_path <- find_csv(base, "functions.csv")
+  f <- if (!is.na(f_path)) {
+    fd <- read.csv(f_path, stringsAsFactors = FALSE)
+    if (nrow(fd) == 0L) {
+      NULL
+    } else {
+      fd$run_id <- rid; fd$run_no <- run_no; fd$ts <- ts
+      fd
+    }
+  } else NULL
+  list(summary = s, functions = f)
+}
+
+loaded <- Map(read_run,
+              runs$databaseId, runs$ts, runs$number,
+              runs$headSha, runs$headBranch)
+loaded <- Filter(Negate(is.null), loaded)
+
+if (length(loaded) == 0L) {
+  stop("No artifacts downloaded — the workflow's artifacts may have expired ",
+       "(GitHub default retention is 90 days).")
+}
+
+summary_all   <- bind_rows(lapply(loaded, `[[`, "summary"))
+functions_all <- bind_rows(lapply(loaded, `[[`, "functions"))
+
+# Older artifacts predate some columns (e.g. n_timeout). Backfill with 0 so
+# downstream code doesn't have to special-case missing columns.
+for (col in c("n_timeout", "n_untypeable", "n_ep_typed", "n_typed", "n_functions")) {
+  if (!col %in% names(summary_all)) summary_all[[col]] <- 0L
+  summary_all[[col]][is.na(summary_all[[col]])] <- 0L
+}
+
+# Per-run entry-point totals (sum across all native conventions).
+summary_all <- summary_all %>%
+  mutate(
+    n_ep_total = coalesce(ep_call, 0L) + coalesce(ep_c, 0L) +
+                 coalesce(ep_fortran, 0L) + coalesce(ep_external, 0L)
+  )
+
+cat(sprintf("Loaded %d runs, %d package-rows, %d function-rows\n",
+            length(loaded), nrow(summary_all), nrow(functions_all)))
+```
+
+## Overall: typed vs. analyzed
+
+```{r overall-typed}
+totals <- summary_all %>%
+  group_by(ts, run_no) %>%
+  summarise(
+    n_typed = sum(n_typed, na.rm = TRUE),
+    n_functions = sum(n_functions, na.rm = TRUE),
+    n_ep_typed = sum(n_ep_typed, na.rm = TRUE),
+    n_ep_total = sum(n_ep_total, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    pct_typed = ifelse(n_functions > 0, 100 * n_typed / n_functions, NA_real_),
+    pct_ep    = ifelse(n_ep_total > 0, 100 * n_ep_typed / n_ep_total, NA_real_)
+  )
+
+ggplot(totals, aes(ts)) +
+  geom_line(aes(y = n_functions, color = "analyzed"), linewidth = 0.6) +
+  geom_line(aes(y = n_typed,     color = "typed"),    linewidth = 0.6) +
+  geom_point(aes(y = n_functions, color = "analyzed"), size = 1.5) +
+  geom_point(aes(y = n_typed,     color = "typed"),    size = 1.5) +
+  labs(x = NULL, y = "Functions", color = NULL,
+       title = "Typed vs. analyzed (totals over all packages)")
+```
+
+```{r overall-pct}
+ggplot(totals, aes(ts, pct_typed)) +
+  geom_line(linewidth = 0.6) + geom_point(size = 1.5) +
+  scale_y_continuous(labels = label_percent(scale = 1)) +
+  labs(x = NULL, y = "% typed", title = "% functions typed")
+```
+
+## Overall: entry-point typing rate
+
+```{r overall-ep}
+ggplot(totals, aes(ts, pct_ep)) +
+  geom_line(linewidth = 0.6) + geom_point(size = 1.5) +
+  scale_y_continuous(labels = label_percent(scale = 1)) +
+  labs(x = NULL, y = "% entry points typed",
+       title = "Entry-point typing rate (.Call/.C/.External/Fortran)")
+```
+
+## Per-package: typed functions
+
+Top `r params$top_n_packages` packages by analyzed-function count in the latest run.
+
+```{r per-pkg-select}
+latest_ts <- max(summary_all$ts)
+top_pkgs <- summary_all %>%
+  filter(ts == latest_ts) %>%
+  arrange(desc(n_functions)) %>%
+  slice_head(n = params$top_n_packages) %>%
+  pull(package)
+pkg_view <- summary_all %>% filter(package %in% top_pkgs)
+```
+
+```{r per-pkg-typed, fig.height=10}
+ggplot(pkg_view, aes(ts)) +
+  geom_line(aes(y = n_functions, color = "analyzed"), linewidth = 0.4) +
+  geom_line(aes(y = n_typed,     color = "typed"),    linewidth = 0.4) +
+  facet_wrap(~ package, scales = "free_y") +
+  labs(x = NULL, y = "Functions", color = NULL,
+       title = "Typed vs. analyzed per package")
+```
+
+```{r per-pkg-pct, fig.height=10}
+pkg_view %>%
+  mutate(pct_typed = ifelse(n_functions > 0, 100 * n_typed / n_functions, NA_real_)) %>%
+  ggplot(aes(ts, pct_typed)) +
+  geom_line(linewidth = 0.4) + geom_point(size = 0.6) +
+  facet_wrap(~ package) +
+  scale_y_continuous(labels = label_percent(scale = 1), limits = c(0, 100)) +
+  labs(x = NULL, y = "% typed", title = "% functions typed per package")
+```
+
+## Per-package: entry-point typing rate
+
+Restricted to packages that have at least one entry point in the latest run.
+
+```{r per-pkg-ep, fig.height=10}
+ep_pkgs <- summary_all %>%
+  filter(ts == latest_ts, n_ep_total > 0) %>%
+  arrange(desc(n_ep_total)) %>%
+  slice_head(n = params$top_n_packages) %>%
+  pull(package)
+
+summary_all %>%
+  filter(package %in% ep_pkgs) %>%
+  mutate(pct_ep = ifelse(n_ep_total > 0, 100 * n_ep_typed / n_ep_total, NA_real_)) %>%
+  ggplot(aes(ts, pct_ep)) +
+  geom_line(linewidth = 0.4) + geom_point(size = 0.6) +
+  facet_wrap(~ package) +
+  scale_y_continuous(labels = label_percent(scale = 1), limits = c(0, 100)) +
+  labs(x = NULL, y = "% entry points typed",
+       title = "% entry points typed per package")
+```
+
+## Error categories: overall trend
+
+`error_title` from `functions.csv`, restricted to non-typed rows. Top `r params$top_n_categories`
+categories by total occurrence across all runs.
+
+```{r errs-prep}
+errs <- functions_all %>%
+  filter(!is.na(error_title), nzchar(error_title), status != "typed")
+
+top_cats <- errs %>%
+  count(error_title, sort = TRUE) %>%
+  slice_head(n = params$top_n_categories) %>%
+  pull(error_title)
+
+errs_top <- errs %>%
+  mutate(error_title = ifelse(error_title %in% top_cats, error_title, "(other)"))
+
+errs_overall <- errs_top %>%
+  count(ts, run_no, error_title, name = "n")
+```
+
+```{r errs-overall}
+ggplot(errs_overall, aes(ts, n, color = error_title)) +
+  geom_line(linewidth = 0.6) + geom_point(size = 1.2) +
+  labs(x = NULL, y = "Functions", color = "Category",
+       title = "Error categories over time (totals)")
+```
+
+```{r errs-overall-facet, fig.height=8}
+ggplot(errs_overall, aes(ts, n)) +
+  geom_line(linewidth = 0.5) + geom_point(size = 0.8) +
+  facet_wrap(~ error_title, scales = "free_y") +
+  labs(x = NULL, y = "Functions",
+       title = "Error categories over time (faceted)")
+```
+
+## Error categories: per package
+
+```{r errs-per-pkg, fig.height=12}
+errs_pkg <- errs_top %>%
+  filter(package %in% top_pkgs) %>%
+  count(ts, package, error_title, name = "n")
+
+ggplot(errs_pkg, aes(ts, n, color = error_title)) +
+  geom_line(linewidth = 0.4) + geom_point(size = 0.6) +
+  facet_wrap(~ package, scales = "free_y") +
+  labs(x = NULL, y = "Functions", color = "Category",
+       title = "Error categories per package")
+```

@@ -22,7 +22,7 @@ BASELINE ?= $(shell test -f results.prev/summary.csv && echo results.prev)
 
 export CHECKER_DIR CHECKER TS_LIB_DIR FUN_TIMEOUT CHECKER_OPTS
 
-.PHONY: all download extract typecheck results snapshot webpage dashboard discover build-checker clean clean-results
+.PHONY: all download extract typecheck results snapshot webpage dashboard discover build-checker trends clean clean-results
 
 all: results
 
@@ -93,6 +93,14 @@ discover:
 # --- Build the type checker ---
 build-checker:
 	cd $(CHECKER_DIR) && dune build
+
+# --- Trend report across CI runs ---
+# Downloads results/ artifacts from past successful CI runs (cached under
+# work/artifacts/) and renders time-series plots. Requires `gh` CLI auth'd
+# against this repo.
+trends:
+	@mkdir -p results
+	Rscript -e 'rmarkdown::render("scripts/trends.Rmd", output_file = "../results/trends.html", knit_root_dir = normalizePath("."))'
 
 # --- Clean targets ---
 clean:

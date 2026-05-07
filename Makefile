@@ -1,10 +1,10 @@
-CHECKER_DIR ?= /home/pierre/Documents/RLanguage/r-c-typing
+CHECKER_DIR ?= /home/pierre/Documents/Rlanguage/r-c-typing
 CHECKER     ?= $(CHECKER_DIR)/_build/default/bin/main.exe
 NPROC       := $(shell nproc)
 TIMEOUT     := 6000
 FUN_TIMEOUT ?= 20
 
-TS_LIB_DIR  ?= /home/pierre/Documents/RLanguage/r-parser/core/tree-sitter/lib
+TS_LIB_DIR  ?= /home/pierre/Documents/Rlanguage/r-parser/core/tree-sitter/lib
 
 # Pass arbitrary flags to the checker. Set FALLBACK=1 to add
 # --fallback-c-signature: when full-body inference fails, bind the function at

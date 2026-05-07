@@ -140,6 +140,13 @@ delta_html <- function(delta, good_dir = 1) {
   sprintf('<span class="delta %s">%s%d</span>', cls, sign, delta)
 }
 
+# Format a per-function timing value (seconds) for the dashboard. The runner
+# emits 6 decimals which is too noisy; show 3 digits below 1s, 2 above.
+fmt_func_timing <- function(t) {
+  if (is.na(t)) return("&mdash;")
+  if (t < 1) sprintf("%.3f s", t) else sprintf("%.2f s", t)
+}
+
 progress_card <- function(label, before, after, good_dir = 1) {
   delta <- after - before
   sprintf(
@@ -329,6 +336,7 @@ common_style <- function() {
     '.func-list { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; margin-bottom: 1rem; }',
     '.func-list h3 { font-family: "JetBrains Mono", monospace; font-size: 1rem; margin-bottom: .25rem; }',
     '.type-sig { font-family: "JetBrains Mono", monospace; font-size: .85rem; color: var(--text); white-space: pre-wrap; word-break: break-word; }',
+    '.timing { font-family: "JetBrains Mono", monospace; font-size: .8rem; color: var(--muted); margin-top: .25rem; }',
     '.error-line { font-family: "JetBrains Mono", monospace; font-size: .85rem; color: var(--bad); white-space: pre-wrap; }',
     '.error-detail pre { font-family: "JetBrains Mono", monospace; font-size: .8rem; background: #f8f8f8; padding: .5rem; border-radius: 4px; overflow-x: auto; white-space: pre-wrap; }',
     'details { margin-top: .5rem; }',
@@ -424,6 +432,43 @@ if (!is.null(b_summary_df)) {
 }
 h('</tbody></table>')
 
+# Per-function inference timing (only when --log-inference-times produced data
+# for at least one package).
+has_timing_col <- "mean_typing_sec" %in% names(summary_df)
+if (has_timing_col && any(!is.na(summary_df$mean_typing_sec))) {
+  timing_rows <- summary_df[!is.na(summary_df$mean_typing_sec), , drop = FALSE]
+  timing_rows <- timing_rows[order(-timing_rows$total_typing_sec), , drop = FALSE]
+
+  h('<h2>Per-function inference timing <small>sum of <code>--log-inference-times</code> per function</small></h2>')
+  h('<table><thead><tr>',
+    '<th>Package</th>',
+    '<th style="text-align:right">Functions timed</th>',
+    '<th style="text-align:right">Timed out</th>',
+    '<th style="text-align:right">Total</th>',
+    '<th style="text-align:right">Avg</th>',
+    '<th style="text-align:right">Median</th>',
+    '<th style="text-align:right">SD</th>',
+    '<th style="text-align:right">Min</th>',
+    '<th style="text-align:right">Max</th>',
+    '</tr></thead><tbody>')
+  for (i in seq_len(nrow(timing_rows))) {
+    r <- timing_rows[i, ]
+    pkg_link <- sprintf('<a href="pkg/%s.html">%s</a>', esc(r$package), esc(r$package))
+    n_to <- if ("n_timeout" %in% names(r)) r$n_timeout else 0L
+    h(sprintf(
+      '<tr><td class="pkg">%s</td><td class="num">%d / %d</td><td class="num">%d</td><td class="num">%s</td><td class="num">%s</td><td class="num">%s</td><td class="num">%s</td><td class="num">%s</td><td class="num">%s</td></tr>',
+      pkg_link,
+      r$n_timed_meas, r$n_functions, n_to,
+      fmt_func_timing(r$total_typing_sec),
+      fmt_func_timing(r$mean_typing_sec),
+      fmt_func_timing(r$median_typing_sec),
+      fmt_func_timing(r$sd_typing_sec),
+      fmt_func_timing(r$min_typing_sec),
+      fmt_func_timing(r$max_typing_sec)))
+  }
+  h('</tbody></table>')
+}
+
 # Error categories
 if (nrow(error_cats) > 0) {
   h('<h2>Error and timeout categories</h2>')
@@ -484,6 +529,7 @@ status_badge <- function(status) {
 }
 
 render_function_block <- function(pkg, name, status, type_sig, error_title, error_detail,
+                                  timing_sec = NA_real_,
                                   is_entry = FALSE, entry_conv = character(),
                                   with_source = TRUE) {
   hh <- character()
@@ -509,6 +555,9 @@ render_function_block <- function(pkg, name, status, type_sig, error_title, erro
       hh <- c(hh, sprintf('<details class="error-detail"><summary>error detail</summary><pre>%s</pre></details>',
         esc(error_detail)))
     }
+  }
+  if (!is.na(timing_sec)) {
+    hh <- c(hh, sprintf('<div class="timing">timing: %s</div>', fmt_func_timing(timing_sec)))
   }
   if (with_source) {
     snip <- source_snippet(pkg, name)
@@ -569,11 +618,13 @@ write_package_page <- function(pkg) {
     if (nrow(rows) > 0) {
       ord <- order(match(rows$status, c("typed", "untypeable", "timeout")), rows$function_name)
       rows <- rows[ord, , drop = FALSE]
+      has_timing <- "timing_sec" %in% names(rows)
       for (i in seq_len(nrow(rows))) {
         r <- rows[i, ]
         is_ep <- r$function_name %in% ep_set
         ph <- c(ph, render_function_block(pkg, r$function_name, r$status,
           r$type_sig, r$error_title, r$error_detail,
+          timing_sec = if (has_timing) r$timing_sec else NA_real_,
           is_entry = is_ep,
           entry_conv = if (is_ep) ep_conv_for(ep_tbl, r$function_name) else character(),
           with_source = TRUE))

@@ -45,7 +45,8 @@ parse_output <- function(lines) {
     return(data.frame(
       function_name = character(), status = character(),
       type_sig = character(), error_title = character(),
-      error_detail = character(), stringsAsFactors = FALSE
+      error_detail = character(), timing_sec = numeric(),
+      stringsAsFactors = FALSE
     ))
   }
 
@@ -54,18 +55,43 @@ parse_output <- function(lines) {
   fname <- character(cap); status <- character(cap)
   type_sig <- character(cap); err_title <- character(cap)
   err_detail <- character(cap)
+  timing <- rep(NA_real_, cap)
   k <- 0L
 
-  push <- function(fn, st, ts, et, ed) {
+  push <- function(fn, st, ts, et, ed, tm = NA_real_) {
     k <<- k + 1L
     if (k > cap) {
       cap <<- cap * 2L
       length(fname) <<- cap; length(status) <<- cap
       length(type_sig) <<- cap; length(err_title) <<- cap
       length(err_detail) <<- cap
+      length(timing) <<- cap
     }
     fname[k] <<- fn; status[k] <<- st; type_sig[k] <<- ts
     err_title[k] <<- et; err_detail[k] <<- ed
+    timing[k] <<- tm
+  }
+
+  # Indented continuation lines emitted under each function block. Both
+  # "  fallback: …" and "  timing: <X> s" can appear in either order. Returns
+  # a list(timing_sec, new_index). Caller is responsible for the starting i.
+  timing_re <- "^\\s+timing:\\s*([0-9.]+)\\s*s\\s*$"
+  fallback_re <- "^\\s+fallback:"
+  consume_continuation <- function(i) {
+    tm <- NA_real_
+    while (i <= n) {
+      l <- lines[i]
+      m <- regmatches(l, regexec(timing_re, l, perl = TRUE))[[1]]
+      if (length(m) == 2L) {
+        tm <- suppressWarnings(as.numeric(m[2L]))
+        i <- i + 1L
+      } else if (grepl(fallback_re, l, perl = TRUE)) {
+        i <- i + 1L
+      } else {
+        break
+      }
+    }
+    list(timing = tm, i = i)
   }
 
   noise <- is_noise_vec(lines)
@@ -99,7 +125,10 @@ parse_output <- function(lines) {
         paste(lines[detail_start:(i - 1L)], collapse = "\n")
       } else NA_character_
 
-      push(func_name, st, NA_character_, et, ed)
+      cont <- consume_continuation(i)
+      i <- cont$i
+
+      push(func_name, st, NA_character_, et, ed, cont$timing)
       next
     }
 
@@ -110,7 +139,11 @@ parse_output <- function(lines) {
         parts <- regmatches(line, regexec("^([A-Za-z_.][A-Za-z0-9_.]*): (.+)$", line))[[1]]
       }
       if (length(parts) == 3L) {
-        push(parts[2L], "typed", parts[3L], NA_character_, NA_character_)
+        i <- i + 1L
+        cont <- consume_continuation(i)
+        i <- cont$i
+        push(parts[2L], "typed", parts[3L], NA_character_, NA_character_, cont$timing)
+        next
       }
     }
     i <- i + 1L
@@ -120,7 +153,8 @@ parse_output <- function(lines) {
     return(data.frame(
       function_name = character(), status = character(),
       type_sig = character(), error_title = character(),
-      error_detail = character(), stringsAsFactors = FALSE
+      error_detail = character(), timing_sec = numeric(),
+      stringsAsFactors = FALSE
     ))
   }
 
@@ -130,6 +164,7 @@ parse_output <- function(lines) {
     type_sig      = type_sig[seq_len(k)],
     error_title   = err_title[seq_len(k)],
     error_detail  = err_detail[seq_len(k)],
+    timing_sec    = timing[seq_len(k)],
     stringsAsFactors = FALSE
   )
 }
@@ -216,12 +251,29 @@ process_package <- function(exit_file) {
   typed_names <- if (n_typed > 0L) funcs$function_name[funcs$status == "typed"] else character()
   n_ep_typed <- sum(ep_names %in% typed_names)
 
+  # Per-function timing aggregates (NA when --log-inference-times wasn't used).
+  timed_funcs   <- if (n_functions > 0L) funcs$timing_sec[!is.na(funcs$timing_sec)] else numeric()
+  n_timed_meas  <- length(timed_funcs)
+  total_typing_sec  <- if (n_timed_meas > 0L) sum(timed_funcs)    else NA_real_
+  mean_typing_sec   <- if (n_timed_meas > 0L) mean(timed_funcs)   else NA_real_
+  median_typing_sec <- if (n_timed_meas > 0L) median(timed_funcs) else NA_real_
+  sd_typing_sec     <- if (n_timed_meas >= 2L) sd(timed_funcs)    else NA_real_
+  min_typing_sec    <- if (n_timed_meas > 0L) min(timed_funcs)    else NA_real_
+  max_typing_sec    <- if (n_timed_meas > 0L) max(timed_funcs)    else NA_real_
+
   summary_row <- data.frame(
     package = pkg, ep_call = ep_call, ep_c = ep_c,
     ep_fortran = ep_fortran, ep_external = ep_external,
     n_functions = n_functions, n_typed = n_typed, n_ep_typed = n_ep_typed,
     n_untypeable = n_untypeable, n_timeout = n_timeout,
     pct_typed = pct_typed, elapsed_sec = elapsed,
+    n_timed_meas = n_timed_meas,
+    total_typing_sec = total_typing_sec,
+    mean_typing_sec = mean_typing_sec,
+    median_typing_sec = median_typing_sec,
+    sd_typing_sec = sd_typing_sec,
+    min_typing_sec = min_typing_sec,
+    max_typing_sec = max_typing_sec,
     exit_code = exit_code, crashed = as.integer(crashed),
     stringsAsFactors = FALSE
   )
@@ -266,13 +318,14 @@ cat(sprintf("summary.csv: %d packages\n", nrow(summary_df)))
 
 if (length(all_functions) > 0) {
   functions_df <- do.call(rbind, all_functions)
-  functions_df <- functions_df[, c("package", "function_name", "status", "type_sig", "error_title", "error_detail")]
+  functions_df <- functions_df[, c("package", "function_name", "status", "type_sig", "error_title", "error_detail", "timing_sec")]
   write.csv(functions_df, file.path(results_dir, "functions.csv"), row.names = FALSE)
   cat(sprintf("functions.csv: %d functions\n", nrow(functions_df)))
 } else {
   write.csv(
     data.frame(package = character(), function_name = character(), status = character(),
                type_sig = character(), error_title = character(), error_detail = character(),
+               timing_sec = numeric(),
                stringsAsFactors = FALSE),
     file.path(results_dir, "functions.csv"), row.names = FALSE
   )

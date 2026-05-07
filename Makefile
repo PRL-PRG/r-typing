@@ -10,9 +10,13 @@ TS_LIB_DIR  ?= /home/pierre/Documents/RLanguage/r-parser/core/tree-sitter/lib
 # --fallback-c-signature: when full-body inference fails, bind the function at
 # its declared C signature so callers don't cascade as "unbound variable".
 FALLBACK ?= 1
+LOG_TIMINGS ?= 1
 CHECKER_OPTS ?=
 ifeq ($(FALLBACK),1)
 CHECKER_OPTS += --fallback-c-signature
+endif
+ifeq ($(LOG_TIMINGS),1)
+CHECKER_OPTS += --log-inference-times
 endif
 
 # Baseline for the dashboard. Auto-picks results.prev/ when present; users can

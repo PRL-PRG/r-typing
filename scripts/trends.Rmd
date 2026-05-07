@@ -13,6 +13,7 @@ params:
   cache_dir: "work/artifacts"
   top_n_packages: 24
   top_n_categories: 8
+  upstream_repo: "programLyrique/r-c-typing"
 ---
 
 ```{r setup, include=FALSE}
@@ -23,6 +24,7 @@ suppressPackageStartupMessages({
   library(tidyr)
   library(jsonlite)
   library(scales)
+  library(DT)
 })
 theme_set(theme_minimal(base_size = 11))
 
@@ -54,7 +56,7 @@ runs_raw <- system2(
     "--workflow", params$workflow,
     "--status", "success",
     "--limit", as.character(params$limit),
-    "--json", "databaseId,number,createdAt,headSha,headBranch,event"),
+    "--json", "databaseId,number,createdAt,headSha,headBranch,event,displayTitle"),
   stdout = TRUE, stderr = TRUE
 )
 runs <- fromJSON(paste(runs_raw, collapse = "\n"))
@@ -99,7 +101,7 @@ find_csv <- function(base, name) {
   if (length(hit) == 0L) NA_character_ else hit[[1]]
 }
 
-read_run <- function(rid, ts, run_no, sha, branch) {
+read_run <- function(rid, ts, run_no, sha, branch, title, event) {
   base <- file.path(cache_dir, as.character(rid))
   s_path <- find_csv(base, "summary.csv")
   if (is.na(s_path)) return(NULL)
@@ -107,6 +109,7 @@ read_run <- function(rid, ts, run_no, sha, branch) {
   if (nrow(s) == 0L) return(NULL)
   s$run_id <- rid; s$run_no <- run_no; s$ts <- ts
   s$sha <- sha; s$branch <- branch
+  s$commit_title <- title; s$event <- event
 
   f_path <- find_csv(base, "functions.csv")
   f <- if (!is.na(f_path)) {
@@ -123,7 +126,7 @@ read_run <- function(rid, ts, run_no, sha, branch) {
 
 loaded <- Map(read_run,
               runs$databaseId, runs$ts, runs$number,
-              runs$headSha, runs$headBranch)
+              runs$headSha, runs$headBranch, runs$displayTitle, runs$event)
 loaded <- Filter(Negate(is.null), loaded)
 
 if (length(loaded) == 0L) {
@@ -139,6 +142,57 @@ functions_all <- bind_rows(lapply(loaded, `[[`, "functions"))
 for (col in c("n_timeout", "n_untypeable", "n_ep_typed", "n_typed", "n_functions")) {
   if (!col %in% names(summary_all)) summary_all[[col]] <- 0L
   summary_all[[col]][is.na(summary_all[[col]])] <- 0L
+}
+
+# Runs triggered by repository_dispatch (event-type r-c-typing-updated, fired
+# from the sibling checker repo) carry "r-c-typing-updated" as displayTitle.
+# Resolve them to the upstream commit subject by matching the run's start time
+# to the most recent main-branch commit on `upstream_repo` at that point.
+upstream_commits_path <- file.path(cache_dir, "upstream_commits.json")
+fetch_upstream_commits <- function() {
+  raw <- suppressWarnings(system2(
+    "gh", c("api", "--paginate",
+            paste0("repos/", params$upstream_repo,
+                   "/commits?sha=main&per_page=100")),
+    stdout = TRUE, stderr = FALSE
+  ))
+  if (!length(raw)) return(NULL)
+  # --paginate concatenates multiple JSON arrays; jsonlite handles a single
+  # array, so re-stitch the pages with simple bracket-balancing.
+  txt <- paste(raw, collapse = "\n")
+  txt <- gsub("\\]\\s*\\[", ",", txt)
+  fromJSON(txt, simplifyDataFrame = FALSE)
+}
+if (file.exists(upstream_commits_path) &&
+    difftime(Sys.time(), file.info(upstream_commits_path)$mtime, units = "hours") < 6) {
+  upstream_commits <- fromJSON(upstream_commits_path, simplifyDataFrame = FALSE)
+} else {
+  upstream_commits <- tryCatch(fetch_upstream_commits(), error = function(e) NULL)
+  if (!is.null(upstream_commits)) {
+    write(jsonlite::toJSON(upstream_commits, auto_unbox = TRUE),
+          upstream_commits_path)
+  }
+}
+
+upstream_subject <- function(at_ts) {
+  if (is.null(upstream_commits) || !length(upstream_commits)) return(NA_character_)
+  for (c in upstream_commits) {  # commits are returned newest-first
+    cd <- as.POSIXct(c$commit$committer$date, format = "%Y-%m-%dT%H:%M:%SZ", tz = "UTC")
+    if (!is.na(cd) && cd <= at_ts) {
+      msg <- c$commit$message
+      return(strsplit(msg, "\n", fixed = TRUE)[[1]][1])
+    }
+  }
+  NA_character_
+}
+
+is_dispatch <- summary_all$event == "repository_dispatch"
+if (any(is_dispatch)) {
+  resolved <- vapply(summary_all$ts[is_dispatch], upstream_subject, character(1))
+  # Keep the original title where the lookup failed (e.g. upstream API down,
+  # commit older than the fetch window).
+  keep <- !is.na(resolved) & nzchar(resolved)
+  summary_all$commit_title[is_dispatch][keep] <- resolved[keep]
 }
 
 # Per-run entry-point totals (sum across all native conventions).
@@ -193,6 +247,71 @@ ggplot(totals, aes(ts, pct_ep)) +
   scale_y_continuous(labels = label_percent(scale = 1)) +
   labs(x = NULL, y = "% entry points typed",
        title = "Entry-point typing rate (.Call/.C/.External/Fortran)")
+```
+
+## Run-by-run summary
+
+One row per CI run: commit subject, total analyzed functions, % typed, and a
+count column for each top error category.
+
+```{r run-table}
+run_totals <- summary_all %>%
+  group_by(ts, run_no, sha, branch, commit_title) %>%
+  summarise(
+    n_analyzed = sum(n_functions, na.rm = TRUE),
+    n_typed    = sum(n_typed,     na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    pct_typed = ifelse(n_analyzed > 0, 100 * n_typed / n_analyzed, NA_real_)
+  )
+
+# Errors per category, per run. Use the same top-N selection logic as the
+# error-trend section below so the columns match what's plotted.
+errs_for_table <- functions_all %>%
+  filter(!is.na(error_title), nzchar(error_title), status != "typed")
+top_cats_tbl <- errs_for_table %>%
+  count(error_title, sort = TRUE) %>%
+  slice_head(n = params$top_n_categories) %>%
+  pull(error_title)
+
+errs_wide <- errs_for_table %>%
+  mutate(error_title = ifelse(error_title %in% top_cats_tbl, error_title, "(other)")) %>%
+  count(run_no, error_title, name = "n") %>%
+  pivot_wider(names_from = error_title, values_from = n, values_fill = 0)
+
+run_table <- run_totals %>%
+  left_join(errs_wide, by = "run_no") %>%
+  arrange(desc(ts)) %>%
+  mutate(
+    date      = format(ts, "%Y-%m-%d %H:%M"),
+    pct_typed = round(pct_typed, 1)
+  ) %>%
+  select(n_analyzed, pct_typed, commit_title,
+         run_no, date, branch,
+         any_of(c(top_cats_tbl, "(other)")))
+
+# Replace NA error counts (runs that predate a category or had zero of it)
+# with 0 — a blank cell is harder to read than an explicit zero.
+err_cols <- intersect(names(run_table), c(top_cats_tbl, "(other)"))
+for (col in err_cols) run_table[[col]][is.na(run_table[[col]])] <- 0L
+
+datatable(
+  run_table,
+  rownames   = FALSE,
+  filter     = "top",
+  extensions = "FixedHeader",
+  options    = list(
+    pageLength  = 25,
+    order       = list(list(4, "desc")),  # 0-indexed: column 4 = date
+    fixedHeader = TRUE,
+    scrollX     = TRUE
+  ),
+  colnames   = c("# analyzed" = "n_analyzed",
+                 "% typed"    = "pct_typed",
+                 "commit"     = "commit_title",
+                 "run"        = "run_no")
+)
 ```
 
 ## Per-package: typed functions

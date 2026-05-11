@@ -28,8 +28,23 @@ if [ -n "${FUN_TIMEOUT:-}" ]; then
     TIMEOUT_OPT=(--timeout "$FUN_TIMEOUT")
 fi
 
+# Optional: wrap with `perf record` when PERF=1. `--quiet` keeps perf's own
+# chatter out of the .out file; only the checker's stdout/stderr land there.
+# Output: <pkg>.perf.data, viewable with `perf report -i <pkg>.perf.data`.
+PERF_PREFIX=()
+if [ "${PERF:-0}" = "1" ]; then
+    PERF_BIN="${PERF_BIN:-perf}"
+    if ! command -v "$PERF_BIN" >/dev/null 2>&1; then
+        echo "PERF=1 but '$PERF_BIN' not found in PATH; skipping profiling for $PKG_NAME" >&2
+    else
+        PERF_PREFIX=("$PERF_BIN" record ${PERF_OPTS:--F 99 --call-graph dwarf} \
+            --quiet -o "$OUT_DIR/$PKG_NAME.perf.data" --)
+    fi
+fi
+
 START=$(date +%s.%N)
-"$CHECKER" ${CHECKER_OPTS-} "${TIMEOUT_OPT[@]}" "$PKG_DIR" > "$OUT_DIR/$PKG_NAME.out" 2>&1
+"${PERF_PREFIX[@]}" "$CHECKER" ${CHECKER_OPTS-} "${TIMEOUT_OPT[@]}" "$PKG_DIR" \
+    > "$OUT_DIR/$PKG_NAME.out" 2>&1
 EXIT_CODE=$?
 END=$(date +%s.%N)
 

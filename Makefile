@@ -1,10 +1,10 @@
-CHECKER_DIR ?= /home/pierre/Documents/Rlanguage/r-c-typing
+CHECKER_DIR ?= /home/pierre/Documents/RLanguage/r-c-typing
 CHECKER     ?= $(CHECKER_DIR)/_build/default/bin/main.exe
 NPROC       := $(shell nproc)
 TIMEOUT     := 6000
 FUN_TIMEOUT ?= 20
 
-TS_LIB_DIR  ?= /home/pierre/Documents/Rlanguage/r-parser/core/tree-sitter/lib
+TS_LIB_DIR  ?= /home/pierre/Documents/RLanguage/r-parser/core/tree-sitter/lib
 
 # Pass arbitrary flags to the checker. Set FALLBACK=1 to add
 # --fallback-c-signature: when full-body inference fails, bind the function at
@@ -19,14 +19,21 @@ ifeq ($(LOG_TIMINGS),1)
 CHECKER_OPTS += --log-inference-times
 endif
 
+# Optional: profile each package with `perf record`. Produces
+# work/raw_output/<pkg>.perf.data alongside the existing .out/.time/.exit
+# files. Override PERF_OPTS to change sample rate or unwind mode.
+# Requires kernel.perf_event_paranoid <= 1 (or sudo).
+PERF ?= 0
+PERF_OPTS ?= -F 99 --call-graph dwarf
+
 # Baseline for the dashboard. Auto-picks results.prev/ when present; users can
 # override with `make webpage BASELINE=results.true_baseline_fb` or disable
 # entirely with `make webpage BASELINE=none`.
 BASELINE ?= $(shell test -f results.prev/summary.csv && echo results.prev)
 
-export CHECKER_DIR CHECKER TS_LIB_DIR FUN_TIMEOUT CHECKER_OPTS
+export CHECKER_DIR CHECKER TS_LIB_DIR FUN_TIMEOUT CHECKER_OPTS PERF PERF_OPTS
 
-.PHONY: all download extract typecheck results snapshot webpage dashboard discover build-checker trends clean clean-results
+.PHONY: all download extract typecheck results snapshot webpage dashboard discover build-checker trends clean clean-results perf-report
 
 all: results
 
@@ -105,6 +112,19 @@ build-checker:
 trends:
 	@mkdir -p results
 	Rscript -e 'rmarkdown::render("scripts/trends.Rmd", output_file = "../results/trends.html", knit_root_dir = normalizePath("."))'
+
+# --- Open perf report for a single package ---
+# Usage: make perf-report PKG=clue
+# Requires `make typecheck PERF=1` to have been run.
+perf-report:
+	@if [ -z "$(PKG)" ]; then \
+	    echo "Usage: make perf-report PKG=<package-name>"; exit 2; \
+	fi
+	@perf_data="work/raw_output/$(PKG).perf.data"; \
+	if [ ! -f "$$perf_data" ]; then \
+	    echo "No perf data at $$perf_data — run 'make typecheck PERF=1' first."; exit 1; \
+	fi; \
+	perf report -i "$$perf_data"
 
 # --- Clean targets ---
 clean:

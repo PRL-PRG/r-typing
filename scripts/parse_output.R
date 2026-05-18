@@ -343,3 +343,10 @@ if (length(all_crashes) > 0) {
   )
   cat("crashes.csv: 0 packages\n")
 }
+
+# Carry checker-version snapshot from work/ into results/ so it survives
+# results.prev/ promotion and CI artifact upload.
+for (f in c("checker_version.txt", "checker_status.txt", "checker_subject.txt")) {
+  src <- file.path(dirname(raw_dir), f)
+  if (file.exists(src)) file.copy(src, file.path(results_dir, f), overwrite = TRUE)
+}

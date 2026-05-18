@@ -42,6 +42,26 @@ sources_root <- "work/sources"
 pkg_dir <- file.path(dirname(output_file), "pkg")
 dir.create(pkg_dir, recursive = TRUE, showWarnings = FALSE)
 
+# --- Checker version (captured at typecheck time by record_checker_version.sh) ---
+read_one_line <- function(path) {
+  if (!file.exists(path)) return(NA_character_)
+  v <- tryCatch(readLines(path, n = 1L, warn = FALSE), error = function(e) character())
+  if (length(v) == 0L || !nzchar(v[1L])) NA_character_ else v[1L]
+}
+read_all_lines <- function(path) {
+  if (!file.exists(path)) return(character())
+  tryCatch(readLines(path, warn = FALSE), error = function(e) character())
+}
+load_checker_meta <- function(dir) {
+  list(
+    version = read_one_line(file.path(dir, "checker_version.txt")),
+    subject = read_one_line(file.path(dir, "checker_subject.txt")),
+    status  = read_all_lines(file.path(dir, "checker_status.txt"))
+  )
+}
+checker_meta  <- load_checker_meta(results_dir)
+b_checker_meta <- if (!is.null(baseline_dir)) load_checker_meta(baseline_dir) else NULL
+
 # Vendor Prism (syntax highlighter) assets next to the generated HTML.
 # Sourced from assets/ at repo root; script is expected to run with cwd = repo root.
 assets_dst <- file.path(dirname(output_file), "assets")
@@ -145,6 +165,63 @@ delta_html <- function(delta, good_dir = 1) {
 fmt_func_timing <- function(t) {
   if (is.na(t)) return("&mdash;")
   if (t < 1) sprintf("%.3f s", t) else sprintf("%.2f s", t)
+}
+
+# Inline checker version (e.g. `fa6d98c0-dirty`). Renders nothing when the
+# version file is missing (older results regenerated after the fact).
+checker_version_html <- function(meta = checker_meta) {
+  if (is.null(meta$version) || is.na(meta$version)) return("")
+  tip <- if (!is.na(meta$subject)) sprintf(' title="%s"', esc(meta$subject)) else ""
+  sprintf(' &middot; checker <code%s>%s</code>', tip, esc(meta$version))
+}
+
+# Inline list of uncommitted changes; `git status --porcelain` codes are
+# translated to readable labels. First `max_inline` entries render directly;
+# any remainder lives inside an expandable <details>. Emitted as a <div> so
+# the (block-level) <details> is valid HTML. Returns "" when clean.
+porcelain_label <- function(code) {
+  switch(code,
+    "??" = "untracked",
+    "!!" = "ignored",
+    "M " = , " M" = , "MM" = "modified",
+    "A " = , "AM" = "added",
+    "D " = , " D" = "deleted",
+    "R " = , "RM" = "renamed",
+    "C " = "copied",
+    "U " = , "UU" = "conflict",
+    trimws(code)
+  )
+}
+
+checker_status_html <- function(meta = checker_meta, max_inline = 8L) {
+  lines <- meta$status
+  lines <- lines[nzchar(lines)]
+  if (length(lines) == 0L) return("")
+
+  fmt_one <- function(l) {
+    code <- substr(l, 1L, 2L)
+    path <- substr(l, 4L, nchar(l))
+    label <- porcelain_label(code)
+    cls <- paste0("dirty-", gsub("[^a-z]", "", tolower(label)))
+    sprintf('<code class="%s"><span class="dirty-tag">%s</span> %s</code>',
+            cls, esc(label), esc(path))
+  }
+  formatted <- vapply(lines, fmt_one, character(1), USE.NAMES = FALSE)
+  total <- length(formatted)
+
+  if (total <= max_inline) {
+    return(sprintf('<div class="dirty-files">uncommitted (%d): %s</div>',
+                   total, paste(formatted, collapse = " ")))
+  }
+  visible <- formatted[seq_len(max_inline)]
+  hidden  <- formatted[(max_inline + 1L):total]
+  sprintf(
+    '<div class="dirty-files">uncommitted (%d): %s <details class="dirty-more"><summary>show %d more</summary><div class="dirty-rest">%s</div></details></div>',
+    total,
+    paste(visible, collapse = " "),
+    length(hidden),
+    paste(hidden, collapse = " ")
+  )
 }
 
 progress_card <- function(label, before, after, good_dir = 1) {
@@ -293,6 +370,23 @@ common_style <- function() {
     'h1 .r { color: var(--accent); }',
     'h1 a { color: inherit; text-decoration: none; }',
     '.subtitle { color: var(--muted); margin-bottom: 2rem; }',
+    '.subtitle:has(+ .dirty-files) { margin-bottom: .25rem; }',
+    '.subtitle code { font-family: "JetBrains Mono", monospace; font-size: .85rem; background: #f0f0f0; padding: .1em .35em; border-radius: 3px; color: var(--text); }',
+    '.dirty-files { color: var(--muted); font-size: .8rem; margin-bottom: 2rem; line-height: 1.7; }',
+    '.dirty-files code { font-family: "JetBrains Mono", monospace; font-size: .75rem; padding: .1em .4em; border-radius: 3px; margin-right: .15rem; white-space: nowrap; }',
+    '.dirty-files .dirty-tag { font-weight: 600; margin-right: .35em; opacity: .8; }',
+    '.dirty-files .dirty-untracked { background: #fef3c7; color: #92400e; }',
+    '.dirty-files .dirty-modified  { background: #dbeafe; color: #1e40af; }',
+    '.dirty-files .dirty-added     { background: #dcfce7; color: #166534; }',
+    '.dirty-files .dirty-deleted   { background: #fee2e2; color: #991b1b; }',
+    '.dirty-files .dirty-renamed   { background: #ede9fe; color: #5b21b6; }',
+    '.dirty-files details { display: inline; }',
+    '.dirty-files details summary { display: inline; cursor: pointer; color: var(--accent); list-style: none; user-select: none; }',
+    '.dirty-files details summary::-webkit-details-marker { display: none; }',
+    '.dirty-files details summary::before { content: "▸ "; }',
+    '.dirty-files details[open] summary::before { content: "▾ "; }',
+    '.dirty-files details summary:hover { text-decoration: underline; }',
+    '.dirty-files .dirty-rest { margin-top: .35rem; padding-left: 1rem; }',
     '.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; margin-bottom: 2rem; }',
     '.stat-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 1rem 1.25rem; }',
     '.stat-card .value { font-size: 1.75rem; font-weight: 700; }',
@@ -364,8 +458,10 @@ h(common_style())
 h('</head><body>')
 
 h('<h1><span class="r">R</span> we type yet?</h1>')
-h(sprintf('<p class="subtitle">Type-checking results for %d CRAN packages &mdash; generated %s</p>',
-  n_packages, format(Sys.time(), "%Y-%m-%d %H:%M")))
+h(sprintf('<p class="subtitle">Type-checking results for %d CRAN packages &mdash; generated %s%s</p>',
+  n_packages, format(Sys.time(), "%Y-%m-%d %H:%M"),
+  checker_version_html()))
+h(checker_status_html())
 
 # Stat cards
 h('<div class="stats">')
@@ -510,7 +606,12 @@ if (nrow(crashes_df) > 0) {
 }
 
 h('<footer>Generated by <strong>r-typing</strong> pipeline')
-if (!is.null(baseline_dir)) h(sprintf(' &middot; baseline: <code>%s</code>', esc(baseline_dir)))
+if (!is.null(baseline_dir)) {
+  b_ver_suffix <- if (!is.null(b_checker_meta) && !is.na(b_checker_meta$version)) {
+    sprintf(' @ <code>%s</code>', esc(b_checker_meta$version))
+  } else ""
+  h(sprintf(' &middot; baseline: <code>%s</code>%s', esc(baseline_dir), b_ver_suffix))
+}
 h('</footer>')
 h('</body></html>')
 
@@ -591,9 +692,11 @@ write_package_page <- function(pkg) {
     '</head><body>',
     '<a href="../index.html" class="back-link">&larr; all packages</a>',
     sprintf('<h1><span class="r">%s</span></h1>', esc(pkg)),
-    sprintf('<p class="subtitle">%d functions analysed &middot; %d typed &middot; %d untypeable &middot; %d timed out &middot; %d entry points (%d typed)</p>',
+    sprintf('<p class="subtitle">%d functions analysed &middot; %d typed &middot; %d untypeable &middot; %d timed out &middot; %d entry points (%d typed)%s</p>',
       s$n_functions, s$n_typed, s$n_untypeable, if ("n_timeout" %in% names(s)) s$n_timeout else 0L,
-      ep_total, s$n_ep_typed))
+      ep_total, s$n_ep_typed,
+      checker_version_html()),
+    checker_status_html())
 
   # Unified function list with filter toolbar.
   ep_set <- ep_names

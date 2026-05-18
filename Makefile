@@ -59,6 +59,7 @@ extract: work/.extract_done
 # --- Run type checker ---
 work/.typecheck_done: work/.extract_done $(CHECKER)
 	@mkdir -p work/raw_output
+	@bash scripts/record_checker_version.sh "$(CHECKER_DIR)" work
 	find work/sources -mindepth 1 -maxdepth 1 -type d \
 		| parallel -j$(NPROC) --timeout $(TIMEOUT) --bar \
 			bash scripts/run_one_package.sh {} work/raw_output

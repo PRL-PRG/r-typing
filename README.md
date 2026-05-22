@@ -34,6 +34,9 @@ This runs the full pipeline: **download → extract → typecheck → results**.
 | `CHECKER_OPTS` | *(empty)* | Extra flags passed to the checker |
 | `FALLBACK` | *(unset)* | When `FALLBACK=1`, appends `--fallback-c-signature` to `CHECKER_OPTS`. Binds functions that fail body inference at their declared C signature so callers don't cascade as "unbound variable". |
 | `BASELINE` | auto-detects `results.prev/` | Directory whose CSVs are diffed against the current run when generating the dashboard. Set `BASELINE=none` to disable, or `BASELINE=results.something` to compare against a specific snapshot. |
+| `PERF` | `0` | When `PERF=1`, each package run is wrapped with `perf record` (see [Profiling](#profiling) below). |
+| `PERF_OPTS` | `-F 99 --call-graph dwarf` | Flags passed to `perf record`. Override to change sample rate or unwind mode. |
+| `PERF_BIN` | `perf` | Profiler binary. Override if `perf` is not on `PATH` (e.g. a kernel-specific build under `/usr/lib/linux-tools-*/`). |
 
 Examples:
 
@@ -57,8 +60,39 @@ make CHECKER_OPTS='--debug'      # pass arbitrary flags
 | `make dashboard` | `make webpage` then open the dashboard via `xdg-open` |
 | `make discover` | Generate `packages.txt` from CRAN (packages with compiled code) |
 | `make build-checker` | Build the type checker via `dune build` |
+| `make perf-report PKG=<name>` | Open `perf report` for a package profiled with `PERF=1` (see [Profiling](#profiling)) |
 | `make clean` | Remove all generated files |
 | `make clean-results` | Remove results and re-run typecheck + parse |
+
+## Profiling
+
+Run any package (or the full pipeline) under `perf record` to get a sampling profile of the checker. Each package gets its own `.perf.data` file alongside the existing `.out` / `.time` / `.exit` outputs, so you can inspect them independently.
+
+```bash
+make typecheck PERF=1                     # profile every package
+make typecheck PERF=1 -j1                 # serialize if you want one sample at a time
+make perf-report PKG=clue                 # open `perf report` for one package
+```
+
+Outputs land in `work/raw_output/<pkg>.perf.data`. View them with `make perf-report PKG=<pkg>` or directly:
+
+```bash
+perf report -i work/raw_output/clue.perf.data
+perf script -i work/raw_output/clue.perf.data | flamegraph.pl > clue.svg
+```
+
+**Prerequisites:**
+
+- `perf` on `PATH` (Debian/Ubuntu: `linux-tools-generic`; the resulting binary often lives under `/usr/lib/linux-tools-<kernel>/perf` — set `PERF_BIN` if it's not symlinked).
+- `kernel.perf_event_paranoid <= 1` (check with `sysctl kernel.perf_event_paranoid`). To temporarily relax it: `sudo sysctl kernel.perf_event_paranoid=1`. Otherwise per-package runs skip profiling with a warning on stderr.
+- For DWARF call-graphs (the default `--call-graph dwarf`), the checker must be built with frame pointers / debug info — the default `dune build` is fine; a stripped release build loses symbol resolution.
+
+**Customizing the profile:** override `PERF_OPTS` to change sample rate, unwind mode, or events:
+
+```bash
+make typecheck PERF=1 PERF_OPTS='-F 999 --call-graph fp'  # higher rate, frame-pointer unwind
+make typecheck PERF=1 PERF_OPTS='-e cache-misses -F 99'   # hardware event instead
+```
 
 ## Output
 

@@ -30,6 +30,7 @@ noise_re <- paste0(
   "|Creating fresh variable:",
   "|Warning:",
   "|r-c-typing:",
+  "|Phase: ",
   "|\\s+(?:Called from|Raised at|Failure)",
   "|\\s*$)"
 )
@@ -251,7 +252,7 @@ process_package <- function(exit_file) {
   typed_names <- if (n_typed > 0L) funcs$function_name[funcs$status == "typed"] else character()
   n_ep_typed <- sum(ep_names %in% typed_names)
 
-  # Per-function timing aggregates (NA when --log-inference-times wasn't used).
+  # Per-function timing aggregates (NA when --log-times wasn't used).
   timed_funcs   <- if (n_functions > 0L) funcs$timing_sec[!is.na(funcs$timing_sec)] else numeric()
   n_timed_meas  <- length(timed_funcs)
   total_typing_sec  <- if (n_timed_meas > 0L) sum(timed_funcs)    else NA_real_

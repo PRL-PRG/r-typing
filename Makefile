@@ -16,7 +16,7 @@ ifeq ($(FALLBACK),1)
 CHECKER_OPTS += --fallback-c-signature
 endif
 ifeq ($(LOG_TIMINGS),1)
-CHECKER_OPTS += --log-inference-times
+CHECKER_OPTS += --log-times
 endif
 
 # Optional: profile each package with `perf record`. Produces

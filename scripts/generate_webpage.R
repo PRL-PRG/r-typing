@@ -528,14 +528,14 @@ if (!is.null(b_summary_df)) {
 }
 h('</tbody></table>')
 
-# Per-function inference timing (only when --log-inference-times produced data
+# Per-function inference timing (only when --log-times produced data
 # for at least one package).
 has_timing_col <- "mean_typing_sec" %in% names(summary_df)
 if (has_timing_col && any(!is.na(summary_df$mean_typing_sec))) {
   timing_rows <- summary_df[!is.na(summary_df$mean_typing_sec), , drop = FALSE]
   timing_rows <- timing_rows[order(-timing_rows$total_typing_sec), , drop = FALSE]
 
-  h('<h2>Per-function inference timing <small>sum of <code>--log-inference-times</code> per function</small></h2>')
+  h('<h2>Per-function inference timing <small>sum of <code>--log-times</code> per function</small></h2>')
   h('<table><thead><tr>',
     '<th>Package</th>',
     '<th style="text-align:right">Functions timed</th>',

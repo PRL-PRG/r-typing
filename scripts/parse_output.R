@@ -262,6 +262,22 @@ process_package <- function(exit_file) {
   min_typing_sec    <- if (n_timed_meas > 0L) min(timed_funcs)    else NA_real_
   max_typing_sec    <- if (n_timed_meas > 0L) max(timed_funcs)    else NA_real_
 
+  # Coarse pipeline phase timings emitted by [--log-times] (`Phase: <name> <s> s`).
+  # NA when the flag wasn't used for that package; recording_save is NA unless
+  # [--mlsem-recording] was also set.
+  phase_sec <- function(name) {
+    pat <- sprintf("^Phase: %s ([0-9.]+) s\\s*$", name)
+    hits <- grep(pat, lines, value = TRUE, perl = TRUE)
+    if (length(hits) == 0L) return(NA_real_)
+    suppressWarnings(as.numeric(sub(pat, "\\1", hits[1L], perl = TRUE)))
+  }
+  phase_load_ty        <- phase_sec("load_ty")
+  phase_parsing        <- phase_sec("parsing")
+  phase_call_graph     <- phase_sec("call_graph")
+  phase_non_fundef     <- phase_sec("non_fundef_pass")
+  phase_fundef_pass    <- phase_sec("fundef_pass")
+  phase_recording_save <- phase_sec("recording_save")
+
   summary_row <- data.frame(
     package = pkg, ep_call = ep_call, ep_c = ep_c,
     ep_fortran = ep_fortran, ep_external = ep_external,
@@ -275,6 +291,12 @@ process_package <- function(exit_file) {
     sd_typing_sec = sd_typing_sec,
     min_typing_sec = min_typing_sec,
     max_typing_sec = max_typing_sec,
+    phase_load_ty_sec        = phase_load_ty,
+    phase_parsing_sec        = phase_parsing,
+    phase_call_graph_sec     = phase_call_graph,
+    phase_non_fundef_sec     = phase_non_fundef,
+    phase_fundef_pass_sec    = phase_fundef_pass,
+    phase_recording_save_sec = phase_recording_save,
     exit_code = exit_code, crashed = as.integer(crashed),
     stringsAsFactors = FALSE
   )

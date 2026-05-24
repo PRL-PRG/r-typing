@@ -424,6 +424,8 @@ common_style <- function() {
     '.delta-zero { color: var(--muted); }',
     '.delta-na   { color: var(--muted); }',
     '.crash-msg { font-family: monospace; font-size: .85rem; color: var(--bad); }',
+    '.phase-legend { color: var(--muted); font-size: .85rem; margin: .5rem 0 1rem; max-width: 60rem; }',
+    '.phase-legend code { font-family: "JetBrains Mono", monospace; font-size: .8rem; background: #f0f0f0; padding: .05em .3em; border-radius: 3px; }',
     '.error-row td:first-child { font-family: monospace; font-size: .9rem; }',
     '.ep-breakdown { font-size: .85rem; color: var(--muted); }',
     '.ep-breakdown code { font-family: "JetBrains Mono", monospace; font-size: .8rem; }',
@@ -561,6 +563,63 @@ if (has_timing_col && any(!is.na(summary_df$mean_typing_sec))) {
       fmt_func_timing(r$sd_typing_sec),
       fmt_func_timing(r$min_typing_sec),
       fmt_func_timing(r$max_typing_sec)))
+  }
+  h('</tbody></table>')
+}
+
+# Pipeline phase breakdown (from `Phase:` lines emitted under --log-times).
+# `overhead = phase_fundef_pass_sec - total_typing_sec` captures the
+# PAst.transform + GC-between-calls cost inside the Fundef loop that's not
+# already attributed to any per-function timing. `recording_save` only fires
+# when --mlsem-recording is set, so the column is suppressed unless at least
+# one package has data.
+phase_cols <- c("phase_load_ty_sec", "phase_parsing_sec",
+                "phase_call_graph_sec", "phase_non_fundef_sec",
+                "phase_fundef_pass_sec")
+if (all(phase_cols %in% names(summary_df)) &&
+    any(!is.na(summary_df$phase_fundef_pass_sec))) {
+  phase_rows <- summary_df[!is.na(summary_df$phase_fundef_pass_sec), , drop = FALSE]
+  phase_rows <- phase_rows[order(-phase_rows$elapsed_sec), , drop = FALSE]
+  has_rec <- "phase_recording_save_sec" %in% names(phase_rows) &&
+             any(!is.na(phase_rows$phase_recording_save_sec))
+
+  h('<h2>Pipeline phase breakdown <small>from <code>Phase:</code> lines under <code>--log-times</code></small></h2>')
+  h('<p class="phase-legend">',
+    '<strong>&Sigma; infer_ast</strong> is the sum of every function\'s <code>infer_ast</code> body-inference timing (the same total as in the table above).',
+    ' <strong>overhead</strong> = <code>fundef_pass &minus; &Sigma; infer_ast</code>: time spent inside the Fundef loop that <em>isn\'t</em> attributed to any function body &mdash; <code>PAst.transform</code> per function, dispatch (StrMap lookups, idenv union), and GC between calls.',
+    '</p>')
+  h('<table><thead><tr>',
+    '<th>Package</th>',
+    '<th style="text-align:right">Wall</th>',
+    '<th style="text-align:right">load_ty</th>',
+    '<th style="text-align:right">parsing</th>',
+    '<th style="text-align:right">call_graph</th>',
+    '<th style="text-align:right">non_fundef</th>',
+    '<th style="text-align:right">fundef_pass</th>',
+    '<th style="text-align:right" title="sum of every function\'s infer_ast timing">&Sigma; infer_ast</th>',
+    if (has_rec) '<th style="text-align:right">recording_save</th>' else '',
+    '<th style="text-align:right" title="fundef_pass minus the sum of per-function infer_ast timings">overhead<br><small>fundef_pass &minus; &Sigma; infer_ast</small></th>',
+    '</tr></thead><tbody>')
+  for (i in seq_len(nrow(phase_rows))) {
+    r <- phase_rows[i, ]
+    overhead <- if (!is.na(r$total_typing_sec))
+      r$phase_fundef_pass_sec - r$total_typing_sec else NA_real_
+    pkg_link <- sprintf('<a href="pkg/%s.html">%s</a>', esc(r$package), esc(r$package))
+    rec_cell <- if (has_rec)
+      sprintf('<td class="num">%s</td>', fmt_func_timing(r$phase_recording_save_sec))
+    else ""
+    h(sprintf(
+      '<tr><td class="pkg">%s</td><td class="num">%s</td><td class="num">%s</td><td class="num">%s</td><td class="num">%s</td><td class="num">%s</td><td class="num">%s</td><td class="num">%s</td>%s<td class="num">%s</td></tr>',
+      pkg_link,
+      fmt_func_timing(r$elapsed_sec),
+      fmt_func_timing(r$phase_load_ty_sec),
+      fmt_func_timing(r$phase_parsing_sec),
+      fmt_func_timing(r$phase_call_graph_sec),
+      fmt_func_timing(r$phase_non_fundef_sec),
+      fmt_func_timing(r$phase_fundef_pass_sec),
+      fmt_func_timing(r$total_typing_sec),
+      rec_cell,
+      fmt_func_timing(overhead)))
   }
   h('</tbody></table>')
 }

@@ -514,6 +514,8 @@ common_style <- function() {
     '.delta-na   { color: var(--muted); }',
     '.crash-msg { font-family: monospace; font-size: .85rem; color: var(--bad); }',
     '.phase-legend { color: var(--muted); font-size: .85rem; margin: .5rem 0 1rem; max-width: 60rem; }',
+    '.total-row td { background: #fffbeb; font-weight: 700; font-size: 1.05rem; border-bottom: 2px solid #fcd34d; }',
+    '.total-row td:first-child { color: #92400e; text-transform: uppercase; letter-spacing: .03em; font-size: .9rem; }',
     '.phase-legend code { font-family: "JetBrains Mono", monospace; font-size: .8rem; background: #f0f0f0; padding: .05em .3em; border-radius: 3px; }',
     '.error-row td:first-child { font-family: monospace; font-size: .9rem; }',
     '.ep-breakdown { font-size: .85rem; color: var(--muted); }',
@@ -742,6 +744,69 @@ if (nrow(error_cats) > 0) {
   h('</tbody></table>')
 }
 
+# Functions typed as `empty` (bottom). Kept separate from the error/timeout
+# table above because these functions DID type — an `empty` result is a quality
+# red flag, not a failure, and can be legitimate (bail-out helpers that never
+# return, e.g. `bail_if`-style functions). Placed next to the error section
+# because it belongs to the same family of red flags.
+empty_counts_by_pkg <- function(fdf) {
+  if (nrow(fdf) == 0L) return(setNames(integer(0), character(0)))
+  ty <- fdf[fdf$status == "typed", , drop = FALSE]
+  if (nrow(ty) == 0L) return(setNames(integer(0), character(0)))
+  flag <- vapply(ty$type_sig, returns_only_empty, logical(1), USE.NAMES = FALSE)
+  ty <- ty[flag, , drop = FALSE]
+  if (nrow(ty) == 0L) return(setNames(integer(0), character(0)))
+  tbl <- table(ty$package)
+  setNames(as.integer(tbl), names(tbl))
+}
+emp_now  <- empty_counts_by_pkg(functions_df)
+emp_base <- if (!is.null(b_functions_df)) empty_counts_by_pkg(b_functions_df) else integer(0)
+total_empty      <- sum(emp_now)
+total_empty_base <- sum(emp_base)
+
+if (total_empty > 0L || length(emp_base) > 0L) {
+  pct_empty <- if (total_typed > 0L) round(100 * total_empty / total_typed, 1) else 0
+  h('<h2>Functions typed as <code>empty</code> <small>typed, but the inferred result is <code>empty</code> (bottom)</small></h2>')
+  h('<p class="phase-legend">An <code>empty</code> return means inference found no usable value &mdash; usually a red flag,',
+    ' though it can be legitimate for bail-out helpers (e.g. <code>bail_if</code>-style functions that never return).',
+    ' Drill into a package and use the <em>empty return only</em> filter to see which functions.</p>')
+
+  cur_for  <- function(p) { v <- emp_now[p];  if (is.na(v)) 0L else as.integer(v) }
+  base_for <- function(p) { v <- emp_base[p]; if (is.na(v)) 0L else as.integer(v) }
+  pkgs <- union(names(emp_now), names(emp_base))
+  pkgs <- pkgs[order(-vapply(pkgs, cur_for, integer(1)), pkgs)]
+  typed_by_pkg <- setNames(summary_df$n_typed, summary_df$package)
+
+  base_col <- if (!is.null(baseline_dir)) '<th style="text-align:right">Before</th><th style="text-align:right">&Delta;</th>' else ''
+  h('<table><thead><tr><th>Package</th><th style="text-align:right">Empty returns</th><th style="text-align:right">% of pkg typed</th>',
+    base_col, '</tr></thead>')
+  # Total row first (in <tfoot> but rendered at the top via CSS order would be
+  # overkill); keep it as a tinted header-like total line so the global figure
+  # and its change are visible at a glance.
+  total_pct <- if (total_typed > 0L) sprintf("%.1f%%", 100 * total_empty / total_typed) else "&mdash;"
+  total_extra <- if (!is.null(baseline_dir))
+    sprintf('<td class="num">%d</td><td class="num">%s</td>',
+            total_empty_base, delta_html(total_empty - total_empty_base, -1))
+  else ""
+  h('<tbody>')
+  h(sprintf('<tr class="total-row"><td>All packages</td><td class="num">%d</td><td class="num">%s</td>%s</tr>',
+    total_empty, total_pct, total_extra))
+  for (p in pkgs) {
+    cnt <- cur_for(p)
+    nt <- as.integer(typed_by_pkg[p]); if (is.na(nt)) nt <- 0L
+    pctp <- if (nt > 0L) sprintf("%.1f%%", 100 * cnt / nt) else "&mdash;"
+    extra <- ""
+    if (!is.null(baseline_dir)) {
+      extra <- sprintf('<td class="num">%d</td><td class="num">%s</td>',
+                       base_for(p), delta_html(cnt - base_for(p), -1))
+    }
+    pkg_link <- sprintf('<a href="pkg/%s.html#empty">%s</a>', esc(p), esc(p))
+    h(sprintf('<tr><td class="pkg">%s</td><td class="num">%d</td><td class="num">%s</td>%s</tr>',
+      pkg_link, cnt, pctp, extra))
+  }
+  h('</tbody></table>')
+}
+
 # Crashes
 if (nrow(crashes_df) > 0) {
   h('<h2>Crash details</h2>')
@@ -951,6 +1016,7 @@ write_package_page <- function(pkg) {
     '  };',
     '  const changedOnly = document.getElementById("flt-changed"); // null when no baseline',
     '  const emptyOnly = document.getElementById("flt-empty");',
+    '  if (emptyOnly && location.hash === "#empty") emptyOnly.checked = true;',
     '  const nameInput = document.getElementById("flt-name");',
     '  const cards = document.querySelectorAll(".func-list[data-status]");',
     '  const counter = document.getElementById("flt-count");',

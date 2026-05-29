@@ -167,6 +167,90 @@ fmt_func_timing <- function(t) {
   if (t < 1) sprintf("%.3f s", t) else sprintf("%.2f s", t)
 }
 
+# --- "empty return type" detection ---
+# A typed function whose *result* type is unconditionally `empty` (bottom) is a
+# red flag: inference concluded the function never produces a usable value. We
+# only flag when *every* top-level arrow returns `empty` (so a refinement like
+# `((A -> ()) & (B -> empty))`, where only the null-input branch is bottom, is
+# NOT flagged).
+
+# Strip one or more layers of parentheses that wrap the whole string. Brackets
+# {} and [] count toward depth so we don't mis-peel `({...})`.
+peel_outer_parens <- function(s) {
+  s <- trimws(s)
+  repeat {
+    if (nchar(s) < 2L || substr(s, 1L, 1L) != "(") break
+    chars <- strsplit(s, "", fixed = TRUE)[[1]]
+    depth <- 0L; matched_at <- -1L
+    for (i in seq_along(chars)) {
+      c <- chars[i]
+      if (c == "(" || c == "{" || c == "[") depth <- depth + 1L
+      else if (c == ")" || c == "}" || c == "]") {
+        depth <- depth - 1L
+        if (depth == 0L) { matched_at <- i; break }
+      }
+    }
+    if (matched_at == nchar(s)) s <- trimws(substr(s, 2L, nchar(s) - 1L)) else break
+  }
+  s
+}
+
+returns_only_empty <- function(sig) {
+  if (is.na(sig) || !nzchar(trimws(sig))) return(FALSE)
+  s0 <- gsub("<\\.\\.\\.>", "", sig)        # drop recursive-type markers
+  s0 <- sub("^∀[^.]*\\.\\s*", "", s0)  # strip leading `∀'a.` quantifier
+  rec <- function(s) {
+    s <- peel_outer_parens(s)
+    if (!nzchar(s)) return(FALSE)
+    chars <- strsplit(s, "", fixed = TRUE)[[1]]
+    n <- length(chars); depth <- 0L
+    arrows <- integer(0); seps <- integer(0); i <- 1L
+    while (i <= n) {
+      c <- chars[i]
+      if (c == "(" || c == "{" || c == "[") depth <- depth + 1L
+      else if (c == ")" || c == "}" || c == "]") depth <- depth - 1L
+      else if (depth == 0L && c == "-" && i < n && chars[i + 1L] == ">") {
+        arrows <- c(arrows, i); i <- i + 1L
+      } else if (depth == 0L && (c == "&" || c == "|")) seps <- c(seps, i)
+      i <- i + 1L
+    }
+    # Top-level union/intersection: every operand must return empty.
+    if (length(seps) > 0L) {
+      bounds <- c(0L, seps, n + 1L)
+      for (k in seq_len(length(bounds) - 1L)) {
+        if (!rec(substr(s, bounds[k] + 1L, bounds[k + 1L] - 1L))) return(FALSE)
+      }
+      return(TRUE)
+    }
+    if (length(arrows) == 0L) return(identical(trimws(s), "empty"))
+    last <- arrows[length(arrows)]
+    identical(trimws(peel_outer_parens(substr(s, last + 2L, n))), "empty")
+  }
+  rec(s0)
+}
+
+# --- Status-change classification (vs baseline) ---
+# Rank statuses so we can colour a transition as an improvement or regression.
+status_rank <- function(s) {
+  switch(s, "typed" = 2L, "timeout" = 1L, "untypeable" = 1L, 0L)
+}
+
+# Returns a list(kind, html) describing how `now` differs from `before`.
+#   kind: "new" | "changed" | "unchanged"
+# `before` is NA when the function was absent from the baseline.
+change_info <- function(now, before) {
+  if (is.na(before)) {
+    return(list(kind = "new",
+      html = ' <span class="badge badge-change-new" title="not present in the baseline run">new</span>'))
+  }
+  if (identical(now, before)) return(list(kind = "unchanged", html = ""))
+  rn <- status_rank(now); rb <- status_rank(before)
+  cls <- if (rn > rb) "badge-change-good" else if (rn < rb) "badge-change-bad" else "badge-change-neutral"
+  list(kind = "changed",
+    html = sprintf(' <span class="badge %s" title="status changed since the baseline run">%s &rarr; %s</span>',
+                   cls, esc(before), esc(now)))
+}
+
 # Inline checker version (e.g. `fa6d98c0-dirty`). Renders nothing when the
 # version file is missing (older results regenerated after the fact).
 checker_version_html <- function(meta = checker_meta) {
@@ -414,6 +498,11 @@ common_style <- function() {
     '.badge-crash { background: var(--bad-bg); color: var(--bad); }',
     '.badge-entry { background: #e0e7ff; color: #3730a3; }',
     '.badge-conv { background: #ccfbf1; color: #115e59; font-family: "JetBrains Mono", monospace; }',
+    '.badge-empty { background: #fde68a; color: #92400e; }',
+    '.badge-change-new { background: #e0e7ff; color: #3730a3; }',
+    '.badge-change-good { background: var(--good-bg); color: var(--good); font-family: "JetBrains Mono", monospace; }',
+    '.badge-change-bad  { background: var(--bad-bg);  color: var(--bad); font-family: "JetBrains Mono", monospace; }',
+    '.badge-change-neutral { background: #f0f0f0; color: var(--muted); font-family: "JetBrains Mono", monospace; }',
     '.filters { display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; padding: .75rem 1rem; background: #fff; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 1rem; position: sticky; top: 0; z-index: 10; }',
     '.filters label { font-size: .9rem; user-select: none; }',
     '.filters input[type="search"] { padding: .25rem .5rem; border: 1px solid var(--border); border-radius: 4px; font: inherit; min-width: 12rem; }',
@@ -679,6 +768,14 @@ cat(sprintf("Wrote %s\n", output_file))
 
 # --- Build PER-PACKAGE pages ---
 
+# Baseline per-function status, keyed by "<package>\x1f<function_name>", for
+# detecting status changes on per-package pages. NULL when no baseline.
+SEP <- "\x1f"
+b_status_by_key <- if (!is.null(b_functions_df)) {
+  setNames(b_functions_df$status,
+           paste(b_functions_df$package, b_functions_df$function_name, sep = SEP))
+} else NULL
+
 status_badge <- function(status) {
   switch(status,
     "typed"      = '<span class="badge badge-typed">typed</span>',
@@ -691,18 +788,26 @@ status_badge <- function(status) {
 render_function_block <- function(pkg, name, status, type_sig, error_title, error_detail,
                                   timing_sec = NA_real_,
                                   is_entry = FALSE, entry_conv = character(),
-                                  with_source = TRUE) {
+                                  with_source = TRUE,
+                                  change = list(kind = "unchanged", html = "")) {
   hh <- character()
   entry_attr <- if (is_entry) "true" else "false"
   conv_attr <- if (length(entry_conv) > 0L) paste(entry_conv, collapse = ",") else ""
   conv_badges <- if (length(entry_conv) > 0L) {
     paste(sprintf(' <span class="badge badge-conv">%s</span>', esc(entry_conv)), collapse = "")
   } else ""
-  hh <- c(hh, sprintf('<div class="func-list" data-status="%s" data-entry="%s" data-conv="%s" data-name="%s"><h3>%s %s%s%s</h3>',
-    esc(status), entry_attr, esc(conv_attr), esc(tolower(name)), esc(name),
+  changed_attr <- if (!identical(change$kind, "unchanged")) "true" else "false"
+  empty_ret <- isTRUE(status == "typed") && returns_only_empty(type_sig)
+  empty_attr <- if (empty_ret) "true" else "false"
+  empty_badge <- if (empty_ret)
+    ' <span class="badge badge-empty" title="result type is empty (bottom) &mdash; inference found no usable return; often a red flag">empty return</span>' else ''
+  hh <- c(hh, sprintf('<div class="func-list" data-status="%s" data-entry="%s" data-conv="%s" data-name="%s" data-changed="%s" data-empty-ret="%s"><h3>%s %s%s%s%s%s</h3>',
+    esc(status), entry_attr, esc(conv_attr), esc(tolower(name)), changed_attr, empty_attr, esc(name),
     status_badge(status),
     if (is_entry) ' <span class="badge badge-entry">entry</span>' else '',
-    conv_badges))
+    conv_badges,
+    change$html,
+    empty_badge))
   if (status == "typed") {
     if (!is.na(type_sig) && nzchar(type_sig)) {
       hh <- c(hh, sprintf('<div class="type-sig">%s</div>', esc(type_sig)))
@@ -761,15 +866,34 @@ write_package_page <- function(pkg) {
   ep_set <- ep_names
   ep_in_csv <- ep_set[ep_set %in% rows$function_name]
   ep_missing <- setdiff(ep_set, ep_in_csv)
-  total_cards <- nrow(rows) + length(ep_missing)
+
+  have_baseline <- !is.null(b_status_by_key)
+  base_status_for <- function(nm) {
+    if (!have_baseline) return(NA_character_)
+    v <- b_status_by_key[[paste(pkg, nm, sep = SEP)]]
+    if (is.null(v)) NA_character_ else v
+  }
+  # Functions present in the baseline for this package but absent now. Exclude
+  # entry points already rendered as 'unknown' (ep_missing) so cards don't
+  # double up and total_cards stays accurate.
+  gone_names <- if (have_baseline) {
+    b_here <- b_functions_df$function_name[b_functions_df$package == pkg]
+    sort(setdiff(setdiff(b_here, rows$function_name), ep_missing))
+  } else character()
+
+  total_cards <- nrow(rows) + length(ep_missing) + length(gone_names)
 
   ph <- c(ph, sprintf('<h2>Functions <small>%d</small></h2>', total_cards))
+  changed_filter <- if (have_baseline)
+    '<label><input type="checkbox" id="flt-changed"> changed only</label>' else ''
   ph <- c(ph,
     '<div class="filters">',
     '<label><input type="checkbox" id="flt-ep"> Entry points only</label>',
     '<label><input type="checkbox" id="flt-typed" checked> typed</label>',
     '<label><input type="checkbox" id="flt-untypeable" checked> untypeable</label>',
     '<label><input type="checkbox" id="flt-timeout" checked> timeout</label>',
+    changed_filter,
+    '<label><input type="checkbox" id="flt-empty"> empty return only</label>',
     '<input type="search" id="flt-name" placeholder="name…">',
     sprintf('<span class="count"><span id="flt-count">%d</span> / %d</span>', total_cards, total_cards),
     '</div>')
@@ -784,13 +908,26 @@ write_package_page <- function(pkg) {
       for (i in seq_len(nrow(rows))) {
         r <- rows[i, ]
         is_ep <- r$function_name %in% ep_set
+        change <- if (have_baseline)
+          change_info(r$status, base_status_for(r$function_name))
+        else list(kind = "unchanged", html = "")
         ph <- c(ph, render_function_block(pkg, r$function_name, r$status,
           r$type_sig, r$error_title, r$error_detail,
           timing_sec = if (has_timing) r$timing_sec else NA_real_,
           is_entry = is_ep,
           entry_conv = if (is_ep) ep_conv_for(ep_tbl, r$function_name) else character(),
-          with_source = TRUE))
+          with_source = TRUE,
+          change = change))
       }
+    }
+    # Functions that existed in the baseline but are gone now (status change:
+    # disappeared). Rendered as lightweight cards so the "changed only" filter
+    # surfaces regressions in coverage.
+    for (nm in gone_names) {
+      was <- base_status_for(nm)
+      ph <- c(ph, sprintf(
+        '<div class="func-list" data-status="gone" data-entry="%s" data-conv="" data-name="%s" data-changed="true" data-empty-ret="false"><h3>%s <span class="badge badge-change-bad">gone</span></h3><div class="error-line">was <strong>%s</strong> in the baseline; no longer typed/reached in this run</div></div>',
+        if (nm %in% ep_set) "true" else "false", esc(tolower(nm)), esc(nm), esc(was)))
     }
     # Entry points missing from functions.csv: render as 'unknown' cards.
     for (nm in ep_missing) {
@@ -798,7 +935,7 @@ write_package_page <- function(pkg) {
       conv_attr <- paste(convs, collapse = ",")
       conv_badges <- paste(sprintf(' <span class="badge badge-conv">%s</span>', esc(convs)), collapse = "")
       ph <- c(ph, sprintf(
-        '<div class="func-list" data-status="unknown" data-entry="true" data-conv="%s" data-name="%s"><h3>%s <span class="badge">unknown</span> <span class="badge badge-entry">entry</span>%s</h3><div class="error-line">no record in functions.csv (likely the entry point itself was filtered)</div></div>',
+        '<div class="func-list" data-status="unknown" data-entry="true" data-conv="%s" data-name="%s" data-changed="false" data-empty-ret="false"><h3>%s <span class="badge">unknown</span> <span class="badge badge-entry">entry</span>%s</h3><div class="error-line">no record in functions.csv (likely the entry point itself was filtered)</div></div>',
         esc(conv_attr), esc(tolower(nm)), esc(nm), conv_badges))
     }
   }
@@ -812,11 +949,15 @@ write_package_page <- function(pkg) {
     '    untypeable: document.getElementById("flt-untypeable"),',
     '    timeout: document.getElementById("flt-timeout"),',
     '  };',
+    '  const changedOnly = document.getElementById("flt-changed"); // null when no baseline',
+    '  const emptyOnly = document.getElementById("flt-empty");',
     '  const nameInput = document.getElementById("flt-name");',
     '  const cards = document.querySelectorAll(".func-list[data-status]");',
     '  const counter = document.getElementById("flt-count");',
     '  function apply() {',
     '    const epOnly = ep.checked;',
+    '    const wantChanged = changedOnly && changedOnly.checked;',
+    '    const wantEmpty = emptyOnly && emptyOnly.checked;',
     '    const q = (nameInput.value || "").toLowerCase();',
     '    let visible = 0;',
     '    cards.forEach(c => {',
@@ -824,15 +965,18 @@ write_package_page <- function(pkg) {
     '      const e = c.dataset.entry === "true";',
     '      const n = c.dataset.name;',
     '      const okEp = !epOnly || e;',
-    '      const okStat = s === "unknown" || (stat[s] && stat[s].checked);',
+    '      const okStat = s === "unknown" || s === "gone" || (stat[s] && stat[s].checked);',
+    '      const okChanged = !wantChanged || c.dataset.changed === "true";',
+    '      const okEmpty = !wantEmpty || c.dataset.emptyRet === "true";',
     '      const okName = !q || n.indexOf(q) !== -1;',
-    '      const show = okEp && okStat && okName;',
+    '      const show = okEp && okStat && okChanged && okEmpty && okName;',
     '      c.style.display = show ? "" : "none";',
     '      if (show) visible++;',
     '    });',
     '    counter.textContent = visible;',
     '  }',
-    '  [ep, stat.typed, stat.untypeable, stat.timeout].forEach(el => el.addEventListener("change", apply));',
+    '  [ep, stat.typed, stat.untypeable, stat.timeout, changedOnly, emptyOnly]',
+    '    .filter(Boolean).forEach(el => el.addEventListener("change", apply));',
     '  nameInput.addEventListener("input", apply);',
     '  apply();',
     '})();',

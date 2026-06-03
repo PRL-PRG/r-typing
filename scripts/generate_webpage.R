@@ -935,8 +935,12 @@ write_package_page <- function(pkg) {
   have_baseline <- !is.null(b_status_by_key)
   base_status_for <- function(nm) {
     if (!have_baseline) return(NA_character_)
-    v <- b_status_by_key[[paste(pkg, nm, sep = SEP)]]
-    if (is.null(v)) NA_character_ else v
+    # b_status_by_key is a named character vector, so `[[` on an absent key
+    # errors ("subscript out of bounds") rather than returning NULL. Functions
+    # newly reached by the call graph won't be in the baseline, so guard the key.
+    key <- paste(pkg, nm, sep = SEP)
+    if (!(key %in% names(b_status_by_key))) return(NA_character_)
+    unname(b_status_by_key[[key]])
   }
   # Functions present in the baseline for this package but absent now. Exclude
   # entry points already rendered as 'unknown' (ep_missing) so cards don't

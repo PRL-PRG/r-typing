@@ -22,12 +22,18 @@ jobs:
     runs-on: ubuntu-latest
     # The nativesem image provides the type checker binary, types/, and
     # libtree-sitter.so, with CHECKER_DIR / CHECKER / TS_LIB_DIR already set.
-    # The image is public.
+    # Use the legacy image package until ghcr.io/programlyrique/nativesem exists.
     container:
-      image: ghcr.io/programlyrique/nativesem:latest
+      image: ghcr.io/programlyrique/r-c-typing:latest
 
     steps:
       - uses: actions/checkout@v6
+
+      - name: Install webpage dependencies
+        run: |
+          apt-get update
+          apt-get install --yes universal-ctags
+          ctags --version
 
       - name: Download source tarballs
         run: make download

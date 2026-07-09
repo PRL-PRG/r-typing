@@ -325,7 +325,11 @@ ctags_available <- function() {
   nzchar(bin)
 }
 HAVE_CTAGS <- ctags_available()
-if (!HAVE_CTAGS) message("ctags not in PATH; source snippets disabled.")
+if (!HAVE_CTAGS) {
+  msg <- "ctags not in PATH; source snippets disabled."
+  if (identical(Sys.getenv("CI"), "true")) stop(msg)
+  message(msg)
+}
 
 # Cache: pkg -> data.frame(name, path, line, end)
 ctags_cache <- new.env(parent = emptyenv())

@@ -13,7 +13,10 @@ params:
   cache_dir: "work/artifacts"
   top_n_packages: 24
   top_n_categories: 8
-  upstream_repo: "programLyrique/r-c-typing"
+  # Where a repository_dispatch run came from, by event type: TypR now, the
+  # NativeSem repository for runs before the migration.
+  upstream_repo: "PRL-PRG/typr"
+  legacy_upstream_repo: "programLyrique/nativesem"
 ---
 
 ```{r setup, include=FALSE}
@@ -137,23 +140,30 @@ if (length(loaded) == 0L) {
 summary_all   <- bind_rows(lapply(loaded, `[[`, "summary"))
 functions_all <- bind_rows(lapply(loaded, `[[`, "functions"))
 
-# Older artifacts predate some columns (e.g. n_timeout). Backfill with 0 so
-# downstream code doesn't have to special-case missing columns.
-for (col in c("n_timeout", "n_untypeable", "n_ep_typed", "n_typed", "n_functions")) {
+# Older artifacts predate some columns (e.g. n_timeout, and every r_*/rg_*
+# column before TypR). Backfill with 0 so downstream code doesn't have to
+# special-case missing columns: a run before TypR did type 0 R definitions.
+for (col in c("n_timeout", "n_untypeable", "n_ep_typed", "n_typed", "n_functions",
+              "r_n_defs", "r_n_typed", "rg_n_typed", "r_n_unbound_prelude")) {
   if (!col %in% names(summary_all)) summary_all[[col]] <- 0L
   summary_all[[col]][is.na(summary_all[[col]])] <- 0L
 }
+# Every function row before TypR is a native function of the one (strict) run.
+for (col in c("side", "mode")) {
+  if (!col %in% names(functions_all)) functions_all[[col]] <- NA_character_
+}
+functions_all$side[is.na(functions_all$side)] <- "native"
+functions_all$mode[is.na(functions_all$mode)] <- "strict"
 
-# Runs triggered by repository_dispatch (event-type r-c-typing-updated, fired
-# from the sibling checker repo) carry "r-c-typing-updated" as displayTitle.
-# Resolve them to the upstream commit subject by matching the run's start time
-# to the most recent main-branch commit on `upstream_repo` at that point.
-upstream_commits_path <- file.path(cache_dir, "upstream_commits.json")
-fetch_upstream_commits <- function() {
+# Runs triggered by repository_dispatch carry the event type as displayTitle:
+# "typr-updated" (fired by TypR) or "r-c-typing-updated" (fired by NativeSem
+# before the migration). Resolve them to the upstream commit subject by
+# matching the run's start time to the most recent main-branch commit on the
+# repository that fired it.
+fetch_upstream_commits <- function(repo) {
   raw <- suppressWarnings(system2(
     "gh", c("api", "--paginate",
-            paste0("repos/", params$upstream_repo,
-                   "/commits?sha=main&per_page=100")),
+            paste0("repos/", repo, "/commits?sha=main&per_page=100")),
     stdout = TRUE, stderr = FALSE
   ))
   if (!length(raw)) return(NULL)
@@ -163,20 +173,24 @@ fetch_upstream_commits <- function() {
   txt <- gsub("\\]\\s*\\[", ",", txt)
   fromJSON(txt, simplifyDataFrame = FALSE)
 }
-if (file.exists(upstream_commits_path) &&
-    difftime(Sys.time(), file.info(upstream_commits_path)$mtime, units = "hours") < 6) {
-  upstream_commits <- fromJSON(upstream_commits_path, simplifyDataFrame = FALSE)
-} else {
-  upstream_commits <- tryCatch(fetch_upstream_commits(), error = function(e) NULL)
-  if (!is.null(upstream_commits)) {
-    write(jsonlite::toJSON(upstream_commits, auto_unbox = TRUE),
-          upstream_commits_path)
+load_upstream_commits <- function(repo) {
+  path <- file.path(cache_dir, paste0("upstream_commits_", gsub("/", "_", repo), ".json"))
+  if (file.exists(path) &&
+      difftime(Sys.time(), file.info(path)$mtime, units = "hours") < 6) {
+    return(fromJSON(path, simplifyDataFrame = FALSE))
   }
+  commits <- tryCatch(fetch_upstream_commits(repo), error = function(e) NULL)
+  if (!is.null(commits)) write(jsonlite::toJSON(commits, auto_unbox = TRUE), path)
+  commits
 }
+upstream_commits <- list(
+  "typr-updated"       = load_upstream_commits(params$upstream_repo),
+  "r-c-typing-updated" = load_upstream_commits(params$legacy_upstream_repo))
 
-upstream_subject <- function(at_ts) {
-  if (is.null(upstream_commits) || !length(upstream_commits)) return(NA_character_)
-  for (c in upstream_commits) {  # commits are returned newest-first
+upstream_subject <- function(at_ts, event_type) {
+  commits <- upstream_commits[[event_type]]
+  if (is.null(commits) || !length(commits)) return(NA_character_)
+  for (c in commits) {  # commits are returned newest-first
     cd <- as.POSIXct(c$commit$committer$date, format = "%Y-%m-%dT%H:%M:%SZ", tz = "UTC")
     if (!is.na(cd) && cd <= at_ts) {
       msg <- c$commit$message
@@ -188,25 +202,30 @@ upstream_subject <- function(at_ts) {
 
 is_dispatch <- summary_all$event == "repository_dispatch"
 if (any(is_dispatch)) {
-  resolved <- vapply(summary_all$ts[is_dispatch], upstream_subject, character(1))
+  resolved <- unlist(Map(upstream_subject, summary_all$ts[is_dispatch],
+                         summary_all$commit_title[is_dispatch]))
   # Keep the original title where the lookup failed (e.g. upstream API down,
   # commit older than the fetch window).
   keep <- !is.na(resolved) & nzchar(resolved)
   summary_all$commit_title[is_dispatch][keep] <- resolved[keep]
 }
 
-# Per-run entry-point totals (sum across all native conventions).
+# Per-run entry-point totals: distinct symbols where TypR counted them (n_ep),
+# else the sum across conventions, which counts a symbol twice when it is
+# reached under two of them.
+if (!"n_ep" %in% names(summary_all)) summary_all$n_ep <- NA_integer_
 summary_all <- summary_all %>%
   mutate(
-    n_ep_total = coalesce(ep_call, 0L) + coalesce(ep_c, 0L) +
-                 coalesce(ep_fortran, 0L) + coalesce(ep_external, 0L)
+    n_ep_total = coalesce(as.integer(n_ep),
+                          coalesce(ep_call, 0L) + coalesce(ep_c, 0L) +
+                          coalesce(ep_fortran, 0L) + coalesce(ep_external, 0L))
   )
 
 cat(sprintf("Loaded %d runs, %d package-rows, %d function-rows\n",
             length(loaded), nrow(summary_all), nrow(functions_all)))
 ```
 
-## Overall: typed vs. analyzed
+## Native: typed vs. analyzed
 
 ```{r overall-typed}
 totals <- summary_all %>%
@@ -229,30 +248,67 @@ ggplot(totals, aes(ts)) +
   geom_point(aes(y = n_functions, color = "analyzed"), size = 1.5) +
   geom_point(aes(y = n_typed,     color = "typed"),    size = 1.5) +
   labs(x = NULL, y = "Functions", color = NULL,
-       title = "Typed vs. analyzed (totals over all packages)")
+       title = "Native: typed vs. analyzed (totals over all packages)")
 ```
 
 ```{r overall-pct}
 ggplot(totals, aes(ts, pct_typed)) +
   geom_line(linewidth = 0.6) + geom_point(size = 1.5) +
   scale_y_continuous(labels = label_percent(scale = 1)) +
-  labs(x = NULL, y = "% typed", title = "% functions typed")
+  labs(x = NULL, y = "% typed", title = "Native: % functions typed")
 ```
 
-## Overall: entry-point typing rate
+## R definitions: strict, gradual, and the prelude gap
+
+The area between the two lines is the gradual gap: what fails in strict mode
+but types once unbound names are given the dynamic type. The dashed line adds
+prelude debt to the strict count, the part of that gap writing prelude
+signatures would close. Runs before TypR have no R side and are left out.
+
+```{r overall-r}
+r_totals <- summary_all %>%
+  group_by(ts, run_no) %>%
+  summarise(
+    r_n_defs = sum(r_n_defs, na.rm = TRUE),
+    r_n_typed = sum(r_n_typed, na.rm = TRUE),
+    rg_n_typed = sum(rg_n_typed, na.rm = TRUE),
+    r_n_unbound_prelude = sum(r_n_unbound_prelude, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  filter(r_n_defs > 0) %>%
+  mutate(
+    strict  = 100 * r_n_typed / r_n_defs,
+    gradual = 100 * rg_n_typed / r_n_defs,
+    ceiling = 100 * (r_n_typed + r_n_unbound_prelude) / r_n_defs
+  )
+
+if (nrow(r_totals) > 0) {
+  ggplot(r_totals, aes(ts)) +
+    geom_ribbon(aes(ymin = strict, ymax = gradual), fill = "grey85") +
+    geom_line(aes(y = gradual, color = "typed, gradual"), linewidth = 0.6) +
+    geom_line(aes(y = strict,  color = "typed, strict"),  linewidth = 0.6) +
+    geom_line(aes(y = ceiling, color = "strict + prelude debt"), linewidth = 0.6, linetype = "dashed") +
+    geom_point(aes(y = strict, color = "typed, strict"), size = 1.2) +
+    scale_y_continuous(labels = label_percent(scale = 1)) +
+    labs(x = NULL, y = "% of named R definitions", color = NULL,
+         title = "R definitions typed (totals over all packages)")
+}
+```
+
+## Native: entry-point typing rate
 
 ```{r overall-ep}
 ggplot(totals, aes(ts, pct_ep)) +
   geom_line(linewidth = 0.6) + geom_point(size = 1.5) +
   scale_y_continuous(labels = label_percent(scale = 1)) +
   labs(x = NULL, y = "% entry points typed",
-       title = "Entry-point typing rate (.Call/.C/.External/Fortran)")
+       title = "Native: entry-point typing rate (.Call/.C/.External/Fortran)")
 ```
 
 ## Run-by-run summary
 
-One row per CI run: commit subject, total analyzed functions, % typed, and a
-count column for each top error category.
+One row per CI run: commit subject, total analyzed native functions, % typed,
+and a count column for each top native error category.
 
 ```{r run-table}
 run_totals <- summary_all %>%
@@ -268,8 +324,11 @@ run_totals <- summary_all %>%
 
 # Errors per category, per run. Use the same top-N selection logic as the
 # error-trend section below so the columns match what's plotted.
+# Native only: R's `unbound variable` count is in the thousands and would
+# flatten every native series.
 errs_for_table <- functions_all %>%
-  filter(!is.na(error_title), nzchar(error_title), status != "typed")
+  filter(side == "native", mode == "strict",
+         !is.na(error_title), nzchar(error_title), status != "typed")
 top_cats_tbl <- errs_for_table %>%
   count(error_title, sort = TRUE) %>%
   slice_head(n = params$top_n_categories) %>%
@@ -314,7 +373,7 @@ datatable(
 )
 ```
 
-## Per-package: typed functions
+## Per-package: typed native functions
 
 Top `r params$top_n_packages` packages by analyzed-function count in the latest run.
 
@@ -334,7 +393,7 @@ ggplot(pkg_view, aes(ts)) +
   geom_line(aes(y = n_typed,     color = "typed"),    linewidth = 0.4) +
   facet_wrap(~ package, scales = "free_y") +
   labs(x = NULL, y = "Functions", color = NULL,
-       title = "Typed vs. analyzed per package")
+       title = "Native: typed vs. analyzed per package")
 ```
 
 ```{r per-pkg-pct, fig.height=10}
@@ -344,10 +403,10 @@ pkg_view %>%
   geom_line(linewidth = 0.4) + geom_point(size = 0.6) +
   facet_wrap(~ package) +
   scale_y_continuous(labels = label_percent(scale = 1), limits = c(0, 100)) +
-  labs(x = NULL, y = "% typed", title = "% functions typed per package")
+  labs(x = NULL, y = "% typed", title = "Native: % functions typed per package")
 ```
 
-## Per-package: entry-point typing rate
+## Per-package: native entry-point typing rate
 
 Restricted to packages that have at least one entry point in the latest run.
 
@@ -366,17 +425,18 @@ summary_all %>%
   facet_wrap(~ package) +
   scale_y_continuous(labels = label_percent(scale = 1), limits = c(0, 100)) +
   labs(x = NULL, y = "% entry points typed",
-       title = "% entry points typed per package")
+       title = "Native: % entry points typed per package")
 ```
 
-## Error categories: overall trend
+## Native error categories: overall trend
 
-`error_title` from `functions.csv`, restricted to non-typed rows. Top `r params$top_n_categories`
+`error_title` from `functions.csv`, restricted to non-typed native functions. Top `r params$top_n_categories`
 categories by total occurrence across all runs.
 
 ```{r errs-prep}
 errs <- functions_all %>%
-  filter(!is.na(error_title), nzchar(error_title), status != "typed")
+  filter(side == "native", mode == "strict",
+         !is.na(error_title), nzchar(error_title), status != "typed")
 
 top_cats <- errs %>%
   count(error_title, sort = TRUE) %>%
@@ -394,7 +454,7 @@ errs_overall <- errs_top %>%
 ggplot(errs_overall, aes(ts, n, color = error_title)) +
   geom_line(linewidth = 0.6) + geom_point(size = 1.2) +
   labs(x = NULL, y = "Functions", color = "Category",
-       title = "Error categories over time (totals)")
+       title = "Native: error categories over time (totals)")
 ```
 
 ```{r errs-overall-facet, fig.height=8}
@@ -402,10 +462,10 @@ ggplot(errs_overall, aes(ts, n)) +
   geom_line(linewidth = 0.5) + geom_point(size = 0.8) +
   facet_wrap(~ error_title, scales = "free_y") +
   labs(x = NULL, y = "Functions",
-       title = "Error categories over time (faceted)")
+       title = "Native: error categories over time (faceted)")
 ```
 
-## Error categories: per package
+## Native error categories: per package
 
 ```{r errs-per-pkg, fig.height=12}
 errs_pkg <- errs_top %>%
@@ -416,5 +476,5 @@ ggplot(errs_pkg, aes(ts, n, color = error_title)) +
   geom_line(linewidth = 0.4) + geom_point(size = 0.6) +
   facet_wrap(~ package, scales = "free_y") +
   labs(x = NULL, y = "Functions", color = "Category",
-       title = "Error categories per package")
+       title = "Native: error categories per package")
 ```

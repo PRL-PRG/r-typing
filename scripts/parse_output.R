@@ -1,326 +1,331 @@
 #!/usr/bin/env Rscript
-# Parse raw type-checker output into summary.csv, functions.csv, and crashes.csv
+# Parse TypR's JSONL reports into the dashboard's CSVs.
+# Usage: Rscript scripts/parse_output.R [raw_dir] [results_dir]
+#
+# raw_dir holds one subdirectory per mode (strict, gradual), each with the
+# <pkg>.{jsonl,out,exit,time} files of run_one_package.sh. Writes:
+#   summary.csv       one row per package. The native columns keep their
+#                     NativeSem-era names; r_* describe the strict R run and
+#                     rg_* the gradual one.
+#   functions.csv     one row per native function or R definition, with its
+#                     side and mode. The native side does not depend on the
+#                     mode, so its rows come from the strict run only.
+#   links.csv         one row per entry point: its native type and whether it
+#                     could be bound on the R side.
+#   entry_points.csv  one row per entry point symbol the R code reaches.
+#   crashes.csv       one row per (package, mode) whose run did not exit 0.
+#
+# Every count is recomputed from the individual records: a run that was killed
+# has no `summary` record, and its partial report is still worth reading. The
+# `summary` record only sets the `truncated` flag.
 
-suppressPackageStartupMessages(library(parallel))
+suppressPackageStartupMessages({
+  library(parallel)
+  library(jsonlite)
+})
 
 args <- commandArgs(trailingOnly = TRUE)
 raw_dir <- if (length(args) >= 1) args[1] else "work/raw_output"
 results_dir <- if (length(args) >= 2) args[2] else "results"
 
+SCHEMA_VERSION <- 2L
+MODES <- c("strict", "gradual")
+
 dir.create(results_dir, recursive = TRUE, showWarnings = FALSE)
 
-# Collect all packages from .exit files
-exit_files <- list.files(raw_dir, pattern = "\\.exit$", full.names = TRUE)
+# A package is anything with an .exit file in some mode directory.
+exit_files <- list.files(raw_dir, pattern = "\\.exit$", recursive = TRUE)
+exit_files <- exit_files[basename(dirname(exit_files)) %in% MODES]
+packages <- sort(unique(sub("\\.exit$", "", basename(exit_files))))
 
-if (length(exit_files) == 0) {
-  cat("No output files found in", raw_dir, "\n")
+if (length(packages) == 0) {
+  cat("No output files found in", file.path(raw_dir, "<mode>"), "\n")
   quit(status = 1)
 }
 
-# Single-pass noise filter — one compiled regex instead of ten per-line greps.
-noise_re <- paste0(
-  "^(?:Typing (?:package|file):",
-  "|Not supported yet:",
-  "|Missing:",
-  "|Prep_incl",
-  "|Entry points detected:",
-  "|Entry points for ",
-  "|Native calls found",
-  "|C source files found",
-  "|Creating fresh variable:",
-  "|Warning:",
-  "|r-c-typing:",
-  "|Phase: ",
-  "|\\s+(?:Called from|Raised at|Failure)",
-  "|\\s*$)"
-)
+raw_path <- function(mode, pkg, ext) file.path(raw_dir, mode, paste0(pkg, ".", ext))
 
-is_noise_vec <- function(lines) grepl(noise_re, lines, perl = TRUE)
+read_first <- function(path, conv) {
+  if (!file.exists(path)) return(conv(NA))
+  v <- readLines(path, n = 1L, warn = FALSE)
+  if (length(v) == 0L) conv(NA) else conv(v)
+}
 
-# Parse one package's .out file into a data.frame of function records.
-# Collect parallel character vectors rather than a data.frame per row (the
-# latter is O(n^2) under do.call(rbind, ...) on long packages like vctrs).
-parse_output <- function(lines) {
-  n <- length(lines)
-  if (n == 0) {
-    return(data.frame(
-      function_name = character(), status = character(),
-      type_sig = character(), error_title = character(),
-      error_detail = character(), timing_sec = numeric(),
-      stringsAsFactors = FALSE
-    ))
-  }
+# A report, split by record kind. NULL when the run left no report at all.
+read_report <- function(path) {
+  if (!file.exists(path)) return(NULL)
+  lines <- readLines(path, warn = FALSE)
+  lines <- lines[nzchar(lines)]
+  # A run killed while writing leaves a partial last line.
+  if (length(lines) > 0L && !validate(lines[length(lines)])) lines <- lines[-length(lines)]
+  if (length(lines) == 0L) return(NULL)
+  recs <- stream_in(textConnection(lines), verbose = FALSE)
+  split(recs, recs$k)
+}
 
-  # Preallocate generously; trim at the end.
-  cap <- 1024L
-  fname <- character(cap); status <- character(cap)
-  type_sig <- character(cap); err_title <- character(cap)
-  err_detail <- character(cap)
-  timing <- rep(NA_real_, cap)
-  k <- 0L
+# A field of a record table, or `default` for each row when no record of that
+# kind carried it.
+fld <- function(df, name, default = NA) {
+  if (!is.null(df) && name %in% names(df)) df[[name]] else rep(default, NROW(df))
+}
+nrec <- function(df) NROW(df)
 
-  push <- function(fn, st, ts, et, ed, tm = NA_real_) {
-    k <<- k + 1L
-    if (k > cap) {
-      cap <<- cap * 2L
-      length(fname) <<- cap; length(status) <<- cap
-      length(type_sig) <<- cap; length(err_title) <<- cap
-      length(err_detail) <<- cap
-      length(timing) <<- cap
-    }
-    fname[k] <<- fn; status[k] <<- st; type_sig[k] <<- ts
-    err_title[k] <<- et; err_detail[k] <<- ed
-    timing[k] <<- tm
-  }
+# Paths relative to the package root, as the dashboard and ctags see them.
+rel_path <- function(path, root) {
+  if (is.na(root)) return(path)
+  prefix <- paste0(root, "/")
+  ifelse(!is.na(path) & startsWith(path, prefix), substring(path, nchar(prefix) + 1L), path)
+}
 
-  # Indented continuation lines emitted under each function block. Both
-  # "  fallback: …" and "  timing: <X> s" can appear in either order. Returns
-  # a list(timing_sec, new_index). Caller is responsible for the starting i.
-  timing_re <- "^\\s+timing:\\s*([0-9.]+)\\s*s\\s*$"
-  fallback_re <- "^\\s+fallback:"
-  consume_continuation <- function(i) {
-    tm <- NA_real_
-    while (i <= n) {
-      l <- lines[i]
-      m <- regmatches(l, regexec(timing_re, l, perl = TRUE))[[1]]
-      if (length(m) == 2L) {
-        tm <- suppressWarnings(as.numeric(m[2L]))
-        i <- i + 1L
-      } else if (grepl(fallback_re, l, perl = TRUE)) {
-        i <- i + 1L
-      } else {
-        break
-      }
-    }
-    list(timing = tm, i = i)
-  }
-
-  noise <- is_noise_vec(lines)
-
-  # Header regexes: func:  or  .C(func):
-  # (one with trailing signature, one bare header followed by untypeable/timeout)
-  header_bare_re <- "^(?:[A-Za-z_.][A-Za-z0-9_.]*|\\.C\\([A-Za-z_.][A-Za-z0-9_.]*\\)):$"
-  header_typed_re <- "^(?:[A-Za-z_.][A-Za-z0-9_.]*|\\.C\\([A-Za-z_.][A-Za-z0-9_.]*\\)): .+"
-
-  i <- 1L
-  while (i <= n) {
-    if (noise[i]) { i <- i + 1L; next }
-    line <- lines[i]
-
-    # Untypeable/timeout pattern: header line followed by "untypeable:" or "timeout:"
-    if (i + 1L <= n && grepl(header_bare_re, line) &&
-        grepl("^(?:untypeable|timeout):", lines[i + 1L])) {
-      # Extract name (strip optional .C( ) wrapper and trailing colon)
-      m <- regmatches(line, regexec("^\\.C\\(([A-Za-z_.][A-Za-z0-9_.]*)\\):$", line))[[1]]
-      func_name <- if (length(m) == 2L) m[2L] else sub(":$", "", line)
-      st <- if (startsWith(lines[i + 1L], "timeout:")) "timeout" else "untypeable"
-      et <- sub("^(?:untypeable|timeout): ", "", lines[i + 1L], perl = TRUE)
-      i <- i + 2L
-
-      # Collect detail lines (name:, argument:, function:)
-      detail_start <- i
-      while (i <= n && grepl("^(?:name|argument|function): ", lines[i], perl = TRUE)) {
-        i <- i + 1L
-      }
-      ed <- if (i > detail_start) {
-        paste(lines[detail_start:(i - 1L)], collapse = "\n")
-      } else NA_character_
-
-      cont <- consume_continuation(i)
-      i <- cont$i
-
-      push(func_name, st, NA_character_, et, ed, cont$timing)
-      next
-    }
-
-    # Typed function: "name: type_sig" or ".C(name): type_sig"
-    if (grepl(header_typed_re, line)) {
-      parts <- regmatches(line, regexec("^\\.C\\(([A-Za-z_.][A-Za-z0-9_.]*)\\): (.+)$", line))[[1]]
-      if (length(parts) < 3L) {
-        parts <- regmatches(line, regexec("^([A-Za-z_.][A-Za-z0-9_.]*): (.+)$", line))[[1]]
-      }
-      if (length(parts) == 3L) {
-        i <- i + 1L
-        cont <- consume_continuation(i)
-        i <- cont$i
-        push(parts[2L], "typed", parts[3L], NA_character_, NA_character_, cont$timing)
-        next
-      }
-    }
-    i <- i + 1L
-  }
-
-  if (k == 0L) {
-    return(data.frame(
-      function_name = character(), status = character(),
-      type_sig = character(), error_title = character(),
-      error_detail = character(), timing_sec = numeric(),
-      stringsAsFactors = FALSE
-    ))
-  }
-
-  data.frame(
-    function_name = fname[seq_len(k)],
-    status        = status[seq_len(k)],
-    type_sig      = type_sig[seq_len(k)],
-    error_title   = err_title[seq_len(k)],
-    error_detail  = err_detail[seq_len(k)],
-    timing_sec    = timing[seq_len(k)],
-    stringsAsFactors = FALSE
+timing_stats <- function(t) {
+  t <- t[!is.na(t)]
+  n <- length(t)
+  list(
+    n_timed_meas      = n,
+    total_typing_sec  = if (n > 0L) sum(t) else NA_real_,
+    mean_typing_sec   = if (n > 0L) mean(t) else NA_real_,
+    median_typing_sec = if (n > 0L) median(t) else NA_real_,
+    sd_typing_sec     = if (n >= 2L) sd(t) else NA_real_,
+    min_typing_sec    = if (n > 0L) min(t) else NA_real_,
+    max_typing_sec    = if (n > 0L) max(t) else NA_real_
   )
 }
 
-# Per-package worker — returns summary row (data.frame), functions (data.frame
-# with package col) or NULL, and crash row (data.frame) or NULL.
-process_package <- function(exit_file) {
-  pkg <- sub("\\.exit$", "", basename(exit_file))
-  out_file <- file.path(raw_dir, paste0(pkg, ".out"))
-  time_file <- file.path(raw_dir, paste0(pkg, ".time"))
+phase_sec <- function(rep, name) {
+  ph <- rep$phase
+  v <- fld(ph, "elapsed_sec")[fld(ph, "name") == name]
+  if (length(v) == 0L) NA_real_ else v[1L]
+}
 
-  exit_code <- as.integer(readLines(exit_file, n = 1L, warn = FALSE))
-  elapsed <- if (file.exists(time_file)) {
-    as.numeric(readLines(time_file, n = 1L, warn = FALSE))
-  } else {
-    NA_real_
-  }
+# The package's native functions (globals, #defines and type declarations are
+# reported too, but are not what the native side is measured on).
+native_functions <- function(rep) {
+  nd <- rep$native_def
+  if (is.null(nd)) return(NULL)
+  nd[fld(nd, "kind") == "function", , drop = FALSE]
+}
 
-  crashed <- exit_code != 0L
-
-  lines <- if (file.exists(out_file)) readLines(out_file, warn = FALSE) else character()
-
-  crash_row <- NULL
-  if (crashed) {
-    exception_line <- grep("^\\s*(?:Failure|Invalid_argument)\\(", lines, value = TRUE, perl = TRUE)
-    if (length(exception_line) == 0L) {
-      exception_line <- grep("^r-c-typing: internal error", lines, value = TRUE)
-    }
-    error_message <- if (length(exception_line) > 0L) {
-      trimws(exception_line[1L])
-    } else if (exit_code == 137L) {
-      "killed (SIGKILL, likely timeout or OOM)"
-    } else if (exit_code == 124L) {
-      "killed (timeout)"
-    } else if (length(lines) > 0L) {
-      first <- lines[!is_noise_vec(lines) & !grepl("^\\s", lines)]
-      if (length(first) > 0L) trimws(first[1L]) else NA_character_
-    } else {
-      NA_character_
-    }
-    crash_row <- data.frame(
-      package = pkg, exit_code = exit_code,
-      error_message = error_message, stringsAsFactors = FALSE
+native_summary <- function(rep) {
+  fn <- native_functions(rep)
+  ep <- rep$entry_point
+  status <- fld(fn, "status")
+  conv <- fld(ep, "convention")
+  symbols <- fld(ep, "symbol")
+  c(
+    list(
+      ep_call     = sum(conv == "Call"),
+      ep_c        = sum(conv == "C"),
+      ep_fortran  = sum(conv == "Fortran"),
+      ep_external = sum(conv == "External"),
+      # Distinct symbols (the per-convention counts add up to it: TypR
+      # reports one convention per symbol).
+      n_ep         = length(unique(symbols)),
+      # Defined in src/, so typed at all.
+      n_ep_reached = sum(unique(symbols) %in% fld(fn, "name")),
+      n_ep_typed   = sum(unique(symbols) %in% fld(fn, "name")[status == "typed"]),
+      n_ep_linked  = sum(fld(rep$link, "bound", FALSE), na.rm = TRUE),
+      n_functions  = nrec(fn),
+      n_typed      = sum(status == "typed"),
+      n_untypeable = sum(status == "untypeable"),
+      n_timeout    = sum(status == "timeout"),
+      # Bound at the declared C signature after inference failed.
+      n_from_c_sig = sum(status == "fallback"),
+      n_internal   = sum(status == "internal"),
+      n_empty_ret  = sum(status == "typed" & fld(fn, "degenerate", FALSE), na.rm = TRUE),
+      n_c_files    = fld(rep$run, "n_c_files", NA_integer_)[1L]
+    ),
+    timing_stats(fld(fn, "elapsed_sec", NA_real_)),
+    list(
+      phase_load_ty_sec        = fld(rep$run, "load_ty_sec", NA_real_)[1L],
+      phase_parsing_sec        = phase_sec(rep, "c_parsing"),
+      phase_fundef_pass_sec    = phase_sec(rep, "native_functions")
     )
-  }
-
-  # Entry point counts
-  ep_line <- grep("^Entry points detected:", lines, value = TRUE)
-  if (length(ep_line) > 0L) {
-    ep_str <- ep_line[1L]
-    extract_ep <- function(name) {
-      m <- regmatches(ep_str, regexec(paste0(name, "=(\\d+)"), ep_str))[[1]]
-      if (length(m) == 2L) as.integer(m[2L]) else 0L
-    }
-    ep_call <- extract_ep("Call")
-    ep_c <- extract_ep("C")
-    ep_fortran <- extract_ep("Fortran")
-    ep_external <- extract_ep("External")
-  } else {
-    ep_call <- NA_integer_
-    ep_c <- NA_integer_
-    ep_fortran <- NA_integer_
-    ep_external <- NA_integer_
-  }
-
-  # Entry point names (for n_ep_typed)
-  ep_names <- character()
-  ep_header_idx <- grep("^Entry points for \\.", lines)
-  for (hi in ep_header_idx) {
-    j <- hi + 1L
-    while (j <= length(lines) && grepl("^\\s+\\S", lines[j])) {
-      ep_names <- c(ep_names, trimws(lines[j]))
-      j <- j + 1L
-    }
-  }
-
-  funcs <- parse_output(lines)
-  n_functions <- nrow(funcs)
-  n_typed <- sum(funcs$status == "typed")
-  n_untypeable <- sum(funcs$status == "untypeable")
-  n_timeout <- sum(funcs$status == "timeout")
-  pct_typed <- if (n_functions > 0L) round(100 * n_typed / n_functions, 1) else NA_real_
-
-  typed_names <- if (n_typed > 0L) funcs$function_name[funcs$status == "typed"] else character()
-  n_ep_typed <- sum(ep_names %in% typed_names)
-
-  # Per-function timing aggregates (NA when --log-times wasn't used).
-  timed_funcs   <- if (n_functions > 0L) funcs$timing_sec[!is.na(funcs$timing_sec)] else numeric()
-  n_timed_meas  <- length(timed_funcs)
-  total_typing_sec  <- if (n_timed_meas > 0L) sum(timed_funcs)    else NA_real_
-  mean_typing_sec   <- if (n_timed_meas > 0L) mean(timed_funcs)   else NA_real_
-  median_typing_sec <- if (n_timed_meas > 0L) median(timed_funcs) else NA_real_
-  sd_typing_sec     <- if (n_timed_meas >= 2L) sd(timed_funcs)    else NA_real_
-  min_typing_sec    <- if (n_timed_meas > 0L) min(timed_funcs)    else NA_real_
-  max_typing_sec    <- if (n_timed_meas > 0L) max(timed_funcs)    else NA_real_
-
-  # Coarse pipeline phase timings emitted by [--log-times] (`Phase: <name> <s> s`).
-  # NA when the flag wasn't used for that package; recording_save is NA unless
-  # [--mlsem-recording] was also set.
-  phase_sec <- function(name) {
-    pat <- sprintf("^Phase: %s ([0-9.]+) s\\s*$", name)
-    hits <- grep(pat, lines, value = TRUE, perl = TRUE)
-    if (length(hits) == 0L) return(NA_real_)
-    suppressWarnings(as.numeric(sub(pat, "\\1", hits[1L], perl = TRUE)))
-  }
-  phase_load_ty        <- phase_sec("load_ty")
-  phase_parsing        <- phase_sec("parsing")
-  phase_call_graph     <- phase_sec("call_graph")
-  phase_non_fundef     <- phase_sec("non_fundef_pass")
-  phase_fundef_pass    <- phase_sec("fundef_pass")
-  phase_recording_save <- phase_sec("recording_save")
-
-  summary_row <- data.frame(
-    package = pkg, ep_call = ep_call, ep_c = ep_c,
-    ep_fortran = ep_fortran, ep_external = ep_external,
-    n_functions = n_functions, n_typed = n_typed, n_ep_typed = n_ep_typed,
-    n_untypeable = n_untypeable, n_timeout = n_timeout,
-    pct_typed = pct_typed, elapsed_sec = elapsed,
-    n_timed_meas = n_timed_meas,
-    total_typing_sec = total_typing_sec,
-    mean_typing_sec = mean_typing_sec,
-    median_typing_sec = median_typing_sec,
-    sd_typing_sec = sd_typing_sec,
-    min_typing_sec = min_typing_sec,
-    max_typing_sec = max_typing_sec,
-    phase_load_ty_sec        = phase_load_ty,
-    phase_parsing_sec        = phase_parsing,
-    phase_call_graph_sec     = phase_call_graph,
-    phase_non_fundef_sec     = phase_non_fundef,
-    phase_fundef_pass_sec    = phase_fundef_pass,
-    phase_recording_save_sec = phase_recording_save,
-    exit_code = exit_code, crashed = as.integer(crashed),
-    stringsAsFactors = FALSE
   )
+}
 
-  funcs_row <- if (n_functions > 0L) {
-    funcs$package <- pkg
-    funcs
+# The R side of one run, prefixed r_ (strict) or rg_ (gradual). Only the
+# package's own definitions count: the prelude is checked in the same run.
+# Anonymous top-level statements are counted apart and are never part of a
+# denominator.
+r_summary <- function(rep, prefix) {
+  rd <- rep$r_def
+  rd <- rd[fld(rd, "role") == "package", , drop = FALSE]
+  named <- !fld(rd, "anonymous", FALSE)
+  rd <- rd[named, , drop = FALSE]
+  status <- fld(rd, "status")
+  unbound <- fld(rd, "unbound_kind")
+  files <- rep$file
+  files <- files[fld(files, "side") == "r" & fld(files, "role") == "package", , drop = FALSE]
+  n_defs <- nrec(rd)
+  s <- list(
+    n_defs           = n_defs,
+    n_stmts          = sum(!named),
+    n_typed          = sum(status == "typed"),
+    n_untypeable     = sum(status == "untypeable"),
+    n_timeout        = sum(status == "timeout"),
+    n_skipped        = sum(status == "skipped"),
+    # No error block and no type either: a failure Rsem printed in a shape
+    # TypR does not recognise.
+    n_unknown        = sum(status == "unknown"),
+    n_unbound        = sum(!is.na(unbound)),
+    n_unbound_prelude = sum(unbound == "prelude", na.rm = TRUE),
+    n_unbound_package = sum(unbound == "package", na.rm = TRUE),
+    n_unbound_native  = sum(unbound == "native", na.rm = TRUE),
+    n_other_err      = sum(status == "untypeable" & is.na(unbound)),
+    n_empty_ret      = sum(status == "typed" & fld(rd, "degenerate", FALSE), na.rm = TRUE),
+    n_annotated      = sum(fld(rd, "annotated", FALSE), na.rm = TRUE),
+    n_files          = nrec(files),
+    n_files_unparsed = sum(!fld(files, "parsed", TRUE), na.rm = TRUE),
+    pct_typed        = if (n_defs > 0L) round(100 * sum(status == "typed") / n_defs, 1) else NA_real_,
+    typing_sec       = if (n_defs > 0L) sum(fld(rd, "elapsed_sec", 0), na.rm = TRUE) else NA_real_
+  )
+  setNames(s, paste0(prefix, names(s)))
+}
+
+# The same columns, all NA, for a mode that left no report.
+na_like <- function(x) lapply(x, function(v) v[NA_integer_])
+
+# Each mode's run as a whole: exit, wall time, whether its report is complete.
+run_info <- function(rep, exit_code, elapsed, prefix) {
+  s <- list(
+    elapsed_sec = elapsed,
+    exit_code   = exit_code,
+    crashed     = as.integer(is.na(exit_code) || exit_code != 0L),
+    truncated   = as.integer(is.null(rep$summary) || !isTRUE(rep$summary$complete[1L]))
+  )
+  setNames(s, paste0(prefix, names(s)))
+}
+
+crash_message <- function(rep, exit_code, out_path) {
+  exn <- fld(rep$crash, "exn")
+  if (length(exn) > 0L && !is.na(exn[1L])) return(exn[1L])
+  if (is.na(exit_code)) return("no exit code recorded")
+  if (exit_code == 137L) return("killed (SIGKILL, likely timeout or OOM)")
+  if (exit_code == 124L) return("killed (timeout)")
+  lines <- if (file.exists(out_path)) readLines(out_path, warn = FALSE) else character()
+  lines <- trimws(lines[nzchar(trimws(lines))])
+  if (length(lines) > 0L) lines[length(lines)] else NA_character_
+}
+
+FUNCTION_COLS <- c("package", "function_name", "status", "type_sig", "error_title",
+  "error_detail", "timing_sec", "side", "mode", "file", "line", "col", "degenerate",
+  "is_entry_point", "convention", "annotated", "anonymous", "error_name",
+  "unbound_kind", "error_line", "natives", "calls")
+
+native_rows <- function(pkg, rep, root) {
+  fn <- native_functions(rep)
+  if (nrec(fn) == 0L) return(NULL)
+  data.frame(
+    package = pkg, function_name = fn$name, status = fn$status,
+    type_sig = fld(fn, "type"), error_title = fld(fn, "error_title"),
+    error_detail = fld(fn, "error_detail"), timing_sec = fld(fn, "elapsed_sec"),
+    side = "native", mode = "strict", file = rel_path(fld(fn, "file"), root),
+    line = fld(fn, "line"), col = fld(fn, "col"), degenerate = fld(fn, "degenerate"),
+    is_entry_point = fld(fn, "is_entry_point"), convention = fld(fn, "convention"),
+    annotated = NA, anonymous = FALSE, error_name = NA, unbound_kind = NA,
+    error_line = NA, natives = NA, calls = fld(fn, "calls"),
+    stringsAsFactors = FALSE)
+}
+
+r_rows <- function(pkg, rep, root, mode) {
+  rd <- rep$r_def
+  rd <- rd[fld(rd, "role") == "package", , drop = FALSE]
+  if (nrec(rd) == 0L) return(NULL)
+  data.frame(
+    package = pkg, function_name = rd$name, status = rd$status,
+    type_sig = fld(rd, "type"), error_title = fld(rd, "error_title"),
+    # A skipped definition has no error block, only the exception TypR caught.
+    error_detail = ifelse(is.na(fld(rd, "error_detail")), fld(rd, "skipped_exn"), fld(rd, "error_detail")),
+    timing_sec = fld(rd, "elapsed_sec"),
+    side = "r", mode = mode, file = rel_path(fld(rd, "file"), root),
+    line = fld(rd, "line"), col = fld(rd, "col"), degenerate = fld(rd, "degenerate"),
+    is_entry_point = NA, convention = NA, annotated = fld(rd, "annotated"),
+    anonymous = fld(rd, "anonymous"), error_name = fld(rd, "error_name"),
+    unbound_kind = fld(rd, "unbound_kind"), error_line = fld(rd, "error_line"),
+    natives = fld(rd, "natives"), calls = NA,
+    stringsAsFactors = FALSE)
+}
+
+process_package <- function(pkg) {
+  runs <- lapply(setNames(MODES, MODES), function(mode) list(
+    rep     = read_report(raw_path(mode, pkg, "jsonl")),
+    exit    = read_first(raw_path(mode, pkg, "exit"), as.integer),
+    elapsed = read_first(raw_path(mode, pkg, "time"), as.numeric)))
+  have <- vapply(MODES, function(m) file.exists(raw_path(m, pkg, "exit")), logical(1))
+
+  # The native side is the same in both modes: read it from the strict run,
+  # or from the gradual one when the strict run left nothing.
+  native_mode <- if (!is.null(runs$strict$rep$run)) "strict" else "gradual"
+  nrep <- runs[[native_mode]]$rep
+  root_of <- function(rep) fld(rep$run, "root", NA_character_)[1L]
+
+  strict_r  <- r_summary(runs$strict$rep, "r_")
+  gradual_r <- r_summary(runs$gradual$rep, "rg_")
+  if (is.null(runs$strict$rep))  strict_r  <- na_like(strict_r)
+  if (is.null(runs$gradual$rep)) gradual_r <- na_like(gradual_r)
+
+  native <- native_summary(nrep)
+  if (is.null(nrep)) native <- na_like(native)
+
+  summary_row <- as.data.frame(c(
+    list(package = pkg, schema_version = SCHEMA_VERSION),
+    native,
+    list(pct_typed = if (isTRUE(native$n_functions > 0L))
+      round(100 * native$n_typed / native$n_functions, 1) else NA_real_),
+    strict_r, gradual_r,
+    list(n_r_files = fld(nrep$run, "n_r_files", NA_integer_)[1L]),
+    if (have["strict"]) run_info(runs$strict$rep, runs$strict$exit, runs$strict$elapsed, "")
+    else na_like(run_info(NULL, NA, NA, "")),
+    if (have["gradual"]) run_info(runs$gradual$rep, runs$gradual$exit, runs$gradual$elapsed, "rg_")
+    else na_like(run_info(NULL, NA, NA, "rg_"))
+  ), stringsAsFactors = FALSE)
+
+  funcs <- rbind(
+    native_rows(pkg, nrep, root_of(nrep)),
+    r_rows(pkg, runs$strict$rep, root_of(runs$strict$rep), "strict"),
+    r_rows(pkg, runs$gradual$rep, root_of(runs$gradual$rep), "gradual"))
+
+  link <- nrep$link
+  links <- if (nrec(link) > 0L) data.frame(
+    package = pkg, r_name = link$r_name, symbol = link$symbol,
+    native_typed = fld(link, "native_typed"), native_type = fld(link, "native_type"),
+    convertible = fld(link, "convertible"), reject_reason = fld(link, "reject_reason"),
+    bound = fld(link, "bound"), r_type = fld(link, "r_type"),
+    degenerate = fld(link, "degenerate"), stringsAsFactors = FALSE) else NULL
+
+  ep <- nrep$entry_point
+  entry_points <- if (nrec(ep) > 0L) {
+    fn <- native_functions(nrep)
+    data.frame(
+      package = pkg, r_name = ep$r_name, symbol = ep$symbol, convention = ep$convention,
+      native_status = fld(fn, "status")[match(ep$symbol, fld(fn, "name"))],
+      stringsAsFactors = FALSE)
   } else NULL
 
-  list(summary = summary_row, functions = funcs_row, crash = crash_row)
+  crashes <- do.call(rbind, lapply(MODES[have], function(mode) {
+    r <- runs[[mode]]
+    if (!is.na(r$exit) && r$exit == 0L) return(NULL)
+    data.frame(package = pkg, exit_code = r$exit,
+      error_message = crash_message(r$rep, r$exit, raw_path(mode, pkg, "out")),
+      mode = mode, stringsAsFactors = FALSE)
+  }))
+
+  list(summary = summary_row, functions = funcs, links = links,
+       entry_points = entry_points, crash = crashes)
 }
 
 # Process all packages in parallel. mc.preschedule=FALSE so uneven workloads
-# (like vctrs at ~50k lines vs tiny packages) spread across cores.
-n_cores <- max(1L, min(length(exit_files), parallel::detectCores(logical = FALSE)))
+# (like vctrs against tiny packages) spread across cores.
+n_cores <- max(1L, min(length(packages), parallel::detectCores(logical = FALSE)))
+safe_process <- function(pkg) {
+  tryCatch(process_package(pkg), error = function(e) {
+    list(error = sprintf("%s: %s", pkg, conditionMessage(e)))
+  })
+}
 results <- if (n_cores > 1L && .Platform$OS.type != "windows") {
-  mclapply(exit_files, function(f) {
-    tryCatch(process_package(f), error = function(e) {
-      list(summary = NULL, functions = NULL, crash = NULL,
-           error = sprintf("%s: %s", basename(f), conditionMessage(e)))
-    })
-  }, mc.cores = n_cores, mc.preschedule = FALSE)
+  mclapply(packages, safe_process, mc.cores = n_cores, mc.preschedule = FALSE)
 } else {
-  lapply(exit_files, process_package)
+  lapply(packages, safe_process)
 }
 
 # Surface any per-package errors swallowed by mclapply.
@@ -330,46 +335,41 @@ if (length(errs) > 0L) {
   quit(status = 1)
 }
 
-all_summary <- Filter(Negate(is.null), lapply(results, `[[`, "summary"))
-all_functions <- Filter(Negate(is.null), lapply(results, `[[`, "functions"))
-all_crashes <- Filter(Negate(is.null), lapply(results, `[[`, "crash"))
+collect <- function(part) do.call(rbind, Filter(Negate(is.null), lapply(results, `[[`, part)))
 
-# Write CSVs
-summary_df <- do.call(rbind, all_summary)
-write.csv(summary_df, file.path(results_dir, "summary.csv"), row.names = FALSE)
-cat(sprintf("summary.csv: %d packages\n", nrow(summary_df)))
-
-if (length(all_functions) > 0) {
-  functions_df <- do.call(rbind, all_functions)
-  functions_df <- functions_df[, c("package", "function_name", "status", "type_sig", "error_title", "error_detail", "timing_sec")]
-  write.csv(functions_df, file.path(results_dir, "functions.csv"), row.names = FALSE)
-  cat(sprintf("functions.csv: %d functions\n", nrow(functions_df)))
-} else {
-  write.csv(
-    data.frame(package = character(), function_name = character(), status = character(),
-               type_sig = character(), error_title = character(), error_detail = character(),
-               timing_sec = numeric(),
-               stringsAsFactors = FALSE),
-    file.path(results_dir, "functions.csv"), row.names = FALSE
-  )
-  cat("functions.csv: 0 functions\n")
+write_table <- function(df, empty, name, what) {
+  if (is.null(df)) df <- empty
+  write.csv(df, file.path(results_dir, name), row.names = FALSE)
+  cat(sprintf("%s: %d %s\n", name, nrow(df), what))
 }
 
-if (length(all_crashes) > 0) {
-  crashes_df <- do.call(rbind, all_crashes)
-  write.csv(crashes_df, file.path(results_dir, "crashes.csv"), row.names = FALSE)
-  cat(sprintf("crashes.csv: %d packages\n", nrow(crashes_df)))
-} else {
-  write.csv(
-    data.frame(package = character(), exit_code = integer(), error_message = character(), stringsAsFactors = FALSE),
-    file.path(results_dir, "crashes.csv"), row.names = FALSE
-  )
-  cat("crashes.csv: 0 packages\n")
-}
+write_table(collect("summary"), NULL, "summary.csv", "packages")
 
-# Carry checker-version snapshot from work/ into results/ so it survives
+empty_functions <- as.data.frame(setNames(rep(list(character()), length(FUNCTION_COLS)), FUNCTION_COLS))
+functions_df <- collect("functions")
+if (!is.null(functions_df)) functions_df <- functions_df[, FUNCTION_COLS]
+write_table(functions_df, empty_functions, "functions.csv", "functions and definitions")
+
+write_table(collect("links"),
+  data.frame(package = character(), r_name = character(), symbol = character(),
+             native_typed = logical(), native_type = character(), convertible = logical(),
+             reject_reason = character(), bound = logical(), r_type = character(),
+             degenerate = logical()),
+  "links.csv", "links")
+
+write_table(collect("entry_points"),
+  data.frame(package = character(), r_name = character(), symbol = character(),
+             convention = character(), native_status = character()),
+  "entry_points.csv", "entry points")
+
+write_table(collect("crash"),
+  data.frame(package = character(), exit_code = integer(), error_message = character(),
+             mode = character()),
+  "crashes.csv", "crashed runs")
+
+# Carry the checker-version snapshot from work/ into results/ so it survives
 # results.prev/ promotion and CI artifact upload.
-for (f in c("checker_version.txt", "checker_status.txt", "checker_subject.txt")) {
+for (f in c("provenance.json", "checker_version.txt", "checker_status.txt", "checker_subject.txt")) {
   src <- file.path(dirname(raw_dir), f)
   if (file.exists(src)) file.copy(src, file.path(results_dir, f), overwrite = TRUE)
 }

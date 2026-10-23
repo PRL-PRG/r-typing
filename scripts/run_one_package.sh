@@ -1,36 +1,54 @@
 #!/usr/bin/env bash
-# Run the r-c-typing type checker on one extracted package directory.
-# Usage: run_one_package.sh <package-dir> <output-dir>
+# Run TypR on one extracted package directory, in one mode.
+# Usage: run_one_package.sh <package-dir> <output-root> [strict|gradual]
 #
-# Produces:
-#   <output-dir>/<pkg>.out  — stdout+stderr
-#   <output-dir>/<pkg>.time — wall-clock seconds
-#   <output-dir>/<pkg>.exit — exit code
+# Produces, under <output-root>/<mode>/:
+#   <pkg>.jsonl — TypR's report (one JSON record per line); the measurements
+#   <pkg>.out   — stdout+stderr, kept for debugging
+#   <pkg>.time  — wall-clock seconds
+#   <pkg>.exit  — exit code
+#
+# The mode is a directory rather than part of the file name because R package
+# names may contain dots (data.table, R.utils).
 
 set -u
 
 PKG_DIR="$(realpath "$1")"
-OUT_DIR="$(realpath -m "$2")"
+MODE="${3:-strict}"
+OUT_DIR="$(realpath -m "$2")/$MODE"
 
 PKG_NAME="$(basename "$PKG_DIR")"
 
-CHECKER_DIR="${CHECKER_DIR:-/home/pierre/Documents/Rlanguage/r-c-typing}"
+CHECKER_DIR="${CHECKER_DIR:-/checker}"
 CHECKER="${CHECKER:-$CHECKER_DIR/_build/default/bin/main.exe}"
-TS_LIB_DIR="${TS_LIB_DIR:-/home/pierre/Documents/Rlanguage/r-parser/core/tree-sitter/lib}"
+TS_LIB_DIR="${TS_LIB_DIR:-/home/pierre/Documents/RLanguage/r-parser/core/tree-sitter/lib}"
 export LD_LIBRARY_PATH="${TS_LIB_DIR}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
 mkdir -p "$OUT_DIR"
 
+# NativeSem looks for types/ among the ancestors of the working directory.
 cd "$CHECKER_DIR"
 
-TIMEOUT_OPT=()
+# TypR parses its flags with OCaml's Arg: values go space-separated, never as
+# --flag=value, and the package directory comes last.
+OPTS=(--report "$OUT_DIR/$PKG_NAME.jsonl")
+case "$MODE" in
+    strict) ;;
+    gradual) OPTS+=(--gradual) ;;
+    *) echo "unknown mode '$MODE' (expected strict or gradual)" >&2; exit 2 ;;
+esac
 if [ -n "${FUN_TIMEOUT:-}" ]; then
-    TIMEOUT_OPT=(--timeout "$FUN_TIMEOUT")
+    OPTS+=(--timeout "$FUN_TIMEOUT")
+fi
+# Without a prelude every base R function is unbound; skip it rather than fail
+# when running against a checkout that does not have one.
+if [ -n "${PRELUDE:-}" ] && [ -f "$PRELUDE" ]; then
+    OPTS+=(--prelude "$PRELUDE")
 fi
 
 # Optional: wrap with `perf record` when PERF=1. `--quiet` keeps perf's own
 # chatter out of the .out file; only the checker's stdout/stderr land there.
-# Output: <pkg>.perf.data, viewable with `perf report -i <pkg>.perf.data`.
+# Output: <mode>/<pkg>.perf.data, viewable with `perf report -i <file>`.
 PERF_PREFIX=()
 if [ "${PERF:-0}" = "1" ]; then
     PERF_BIN="${PERF_BIN:-perf}"
@@ -42,9 +60,25 @@ if [ "${PERF:-0}" = "1" ]; then
     fi
 fi
 
+# Caps on one run, applied here rather than by the caller so that a run that
+# hits one still gets its .exit/.time files and keeps the records its report
+# streamed before dying. RUN_TIMEOUT (seconds): the run is killed and exits
+# 124. MEM_LIMIT_MB: the address-space limit of the checker process.
+LIMIT_PREFIX=()
+if [ -n "${RUN_TIMEOUT:-}" ] && [ "$RUN_TIMEOUT" != 0 ]; then
+    LIMIT_PREFIX=(timeout --kill-after=30 "$RUN_TIMEOUT")
+fi
+
+# A stale report from an earlier run would be read as this run's.
+rm -f "$OUT_DIR/$PKG_NAME.jsonl"
+
 START=$(date +%s.%N)
-"${PERF_PREFIX[@]}" "$CHECKER" ${CHECKER_OPTS-} "${TIMEOUT_OPT[@]}" "$PKG_DIR" \
-    > "$OUT_DIR/$PKG_NAME.out" 2>&1
+(
+    if [ -n "${MEM_LIMIT_MB:-}" ] && [ "$MEM_LIMIT_MB" != 0 ]; then
+        ulimit -v $((MEM_LIMIT_MB * 1024))
+    fi
+    exec "${LIMIT_PREFIX[@]}" "${PERF_PREFIX[@]}" "$CHECKER" ${CHECKER_OPTS-} "${OPTS[@]}" "$PKG_DIR"
+) > "$OUT_DIR/$PKG_NAME.out" 2>&1
 EXIT_CODE=$?
 END=$(date +%s.%N)
 

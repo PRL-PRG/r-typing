@@ -4,12 +4,14 @@ on:
   push:
     branches: [main]
   repository_dispatch:
-    # Kept for compatibility with the existing nativesem repository dispatch.
-    types: [r-c-typing-updated]
+    # typr-updated: a new TypR image (dispatched by PRL-PRG/typr).
+    # r-c-typing-updated: the legacy nativesem dispatch, kept as a fallback.
+    types: [typr-updated, r-c-typing-updated]
   workflow_dispatch:
 
 permissions:
   contents: read
+  actions: read     # to fetch the previous run's results as the baseline
   pages: write
   id-token: write
 
@@ -20,20 +22,40 @@ concurrency:
 jobs:
   pipeline:
     runs-on: ubuntu-latest
-    # The nativesem image provides the type checker binary, types/, and
-    # libtree-sitter.so, with CHECKER_DIR / CHECKER / TS_LIB_DIR already set.
-    # Use the legacy image package until ghcr.io/programlyrique/nativesem exists.
+    # The TypR image provides the checker binary, types/, the prelude,
+    # libtree-sitter.so and provenance.json, with CHECKER_DIR / CHECKER /
+    # TS_LIB_DIR already set, plus ctags and jsonlite for the dashboard.
+    # `container:` does not lowercase the reference: keep it lowercase here.
     container:
-      image: ghcr.io/programlyrique/r-c-typing:latest
+      image: ghcr.io/prl-prg/typr:latest
 
     steps:
       - uses: actions/checkout@v6
 
-      - name: Install webpage dependencies
-        run: |
-          apt-get update
-          apt-get install --yes universal-ctags
-          ctags --version
+      # results/ is not committed, so the previous run's artifact is the only
+      # baseline there is. It feeds the Change column, the was -> now badges
+      # and the error deltas. A first run, or an expired artifact, just
+      # renders without them.
+      - name: Find the previous successful run
+        id: prev
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const { data } = await github.rest.actions.listWorkflowRuns({
+              owner: context.repo.owner, repo: context.repo.repo,
+              workflow_id: 'ci.yml', branch: 'main', status: 'success', per_page: 1 });
+            core.setOutput('run_id', data.workflow_runs[0]?.id ?? '');
+
+      - name: Download the baseline
+        if: steps.prev.outputs.run_id != ''
+        continue-on-error: true
+        uses: actions/download-artifact@v5
+        with:
+          run-id: ${{ steps.prev.outputs.run_id }}
+          github-token: ${{ github.token }}
+          pattern: results-*
+          merge-multiple: true
+          path: results.prev
 
       - name: Download source tarballs
         run: make download

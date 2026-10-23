@@ -37,6 +37,85 @@ crashes_df   <- read.csv(file.path(results_dir, "crashes.csv"),  stringsAsFactor
 b_summary_df   <- if (!is.null(baseline_dir)) read.csv(file.path(baseline_dir, "summary.csv"),  stringsAsFactors = FALSE) else NULL
 b_functions_df <- if (!is.null(baseline_dir)) read.csv(file.path(baseline_dir, "functions.csv"), stringsAsFactors = FALSE) else NULL
 
+# --- Column aliases ---
+# The CSV schema grows additively. NativeSem-era runs carry only the native
+# columns; TypR runs keep those names (still meaning native) and add r_*
+# (strict) and rg_* (gradual) columns beside them, plus side/mode on
+# functions.csv. Everything below reads through these aliases, so one script
+# renders either kind of results dir, against a baseline of either kind.
+getcol <- function(df, name, default = NA) {
+  if (!is.null(df) && name %in% names(df)) df[[name]] else rep(default, NROW(df))
+}
+
+native_cols <- function(df) {
+  ep_call     <- getcol(df, "ep_call", 0L)
+  ep_c        <- getcol(df, "ep_c", 0L)
+  ep_fortran  <- getcol(df, "ep_fortran", 0L)
+  ep_external <- getcol(df, "ep_external", 0L)
+  list(
+    n          = getcol(df, "n_functions", 0L),
+    typed      = getcol(df, "n_typed", 0L),
+    untypeable = getcol(df, "n_untypeable", 0L),
+    timeout    = getcol(df, "n_timeout", 0L),
+    ep_call = ep_call, ep_c = ep_c, ep_fortran = ep_fortran, ep_external = ep_external,
+    # Distinct entry-point symbols. Older runs only have the per-convention
+    # counts, whose sum counts a symbol twice when it is reached under two
+    # conventions.
+    ep         = if (!is.null(df) && "n_ep" %in% names(df)) df$n_ep
+                 else ep_call + ep_c + ep_fortran + ep_external,
+    ep_typed   = getcol(df, "n_ep_typed", 0L)
+  )
+}
+
+# R definitions (r_*: strict run, rg_*: gradual run). All NA on a
+# NativeSem-era run, which is what HAVE_R tests.
+r_cols <- function(df) {
+  list(
+    n               = getcol(df, "r_n_defs", NA_integer_),
+    typed           = getcol(df, "r_n_typed", NA_integer_),
+    untypeable      = getcol(df, "r_n_untypeable", NA_integer_),
+    timeout         = getcol(df, "r_n_timeout", NA_integer_),
+    skipped         = getcol(df, "r_n_skipped", NA_integer_),
+    unbound_prelude = getcol(df, "r_n_unbound_prelude", NA_integer_),
+    g_typed         = getcol(df, "rg_n_typed", NA_integer_),
+    g_untypeable    = getcol(df, "rg_n_untypeable", NA_integer_),
+    g_timeout       = getcol(df, "rg_n_timeout", NA_integer_)
+  )
+}
+
+# Every pre-TypR function row is a native function from the one (strict) run.
+backfill_functions <- function(df) {
+  if (is.null(df)) return(NULL)
+  df$side <- getcol(df, "side", "native")
+  df$mode <- getcol(df, "mode", "strict")
+  df
+}
+functions_df   <- backfill_functions(functions_df)
+b_functions_df <- backfill_functions(b_functions_df)
+
+nat   <- native_cols(summary_df)
+rs    <- r_cols(summary_df)
+b_nat <- if (!is.null(b_summary_df)) native_cols(b_summary_df) else NULL
+HAVE_NATIVE <- any(nat$n > 0, na.rm = TRUE)
+HAVE_R      <- any(!is.na(rs$n))
+
+# Baseline matching key: package, side, file, name, occurrence. `occurrence`
+# numbers repeated rows in order (R files hold many anonymous `_` statements).
+# `file` only takes part when both runs record it, so a NativeSem-era
+# baseline still matches a TypR run.
+SEP <- "\x1f"
+use_file_key <- !is.null(b_functions_df) &&
+  "file" %in% names(functions_df) && "file" %in% names(b_functions_df)
+function_keys <- function(df) {
+  if (nrow(df) == 0L) return(character())
+  file <- if (use_file_key) ifelse(is.na(df$file), "", df$file) else ""
+  stem <- paste(df$package, df$side, file, df$function_name, sep = SEP)
+  occurrence <- ave(seq_along(stem), stem, FUN = seq_along)
+  paste(stem, occurrence, sep = SEP)
+}
+functions_df$key <- function_keys(functions_df)
+if (!is.null(b_functions_df)) b_functions_df$key <- function_keys(b_functions_df)
+
 raw_dir <- "work/raw_output"
 sources_root <- "work/sources"
 pkg_dir <- file.path(dirname(output_file), "pkg")
@@ -93,26 +172,29 @@ prism_script <- function(prefix = "") {
 
 # --- Aggregate stats ---
 n_packages    <- nrow(summary_df)
-n_crashed     <- sum(summary_df$crashed == 1)
+n_crashed     <- sum(getcol(summary_df, "crashed", 0L) == 1)
 n_ok          <- n_packages - n_crashed
 
-total_functions  <- sum(summary_df$n_functions, na.rm = TRUE)
-total_typed      <- sum(summary_df$n_typed, na.rm = TRUE)
-total_untypeable <- sum(summary_df$n_untypeable, na.rm = TRUE)
-total_timeout    <- if ("n_timeout" %in% names(summary_df)) sum(summary_df$n_timeout, na.rm = TRUE) else 0L
-total_ep_call    <- sum(summary_df$ep_call,     na.rm = TRUE)
-total_ep_c       <- sum(summary_df$ep_c,        na.rm = TRUE)
-total_ep_fortran <- sum(summary_df$ep_fortran,  na.rm = TRUE)
-total_ep_external<- sum(summary_df$ep_external, na.rm = TRUE)
-total_ep         <- total_ep_call + total_ep_c + total_ep_fortran + total_ep_external
-total_ep_typed   <- sum(summary_df$n_ep_typed,  na.rm = TRUE)
+total_functions  <- sum(nat$n, na.rm = TRUE)
+total_typed      <- sum(nat$typed, na.rm = TRUE)
+total_untypeable <- sum(nat$untypeable, na.rm = TRUE)
+total_timeout    <- sum(nat$timeout, na.rm = TRUE)
+total_ep_call    <- sum(nat$ep_call,     na.rm = TRUE)
+total_ep_c       <- sum(nat$ep_c,        na.rm = TRUE)
+total_ep_fortran <- sum(nat$ep_fortran,  na.rm = TRUE)
+total_ep_external<- sum(nat$ep_external, na.rm = TRUE)
+total_ep         <- if ("n_ep" %in% names(summary_df)) sum(nat$ep, na.rm = TRUE) else
+                      total_ep_call + total_ep_c + total_ep_fortran + total_ep_external
+total_ep_typed   <- sum(nat$ep_typed,  na.rm = TRUE)
 
 pct_overall  <- if (total_functions > 0) round(100 * total_typed / total_functions, 1) else 0
 pct_ep_typed <- if (total_ep > 0) round(100 * total_ep_typed / total_ep, 1) else 0
 
 # Per-error-category counts (status untypeable+timeout, grouped by error_title;
-# all timeouts go into a single "timeout" bucket).
-error_category_counts <- function(fdf) {
+# all timeouts go into a single "timeout" bucket). One side and mode at a time:
+# the native and R error vocabularies are disjoint.
+error_category_counts <- function(fdf, side = "native", mode = "strict") {
+  fdf <- fdf[fdf$side == side & fdf$mode == mode, , drop = FALSE]
   if (nrow(fdf) == 0) return(setNames(integer(0), character(0)))
   ut <- fdf[fdf$status %in% c("untypeable", "timeout"), ]
   if (nrow(ut) == 0) return(setNames(integer(0), character(0)))
@@ -140,8 +222,8 @@ esc <- function(x) {
   x
 }
 
-pct_bar <- function(typed, total) {
-  if (is.na(total) || total == 0) return('<span class="na">no functions analysed</span>')
+pct_bar <- function(typed, total, empty_label = "no functions analysed") {
+  if (is.na(total) || total == 0) return(sprintf('<span class="na">%s</span>', empty_label))
   pct <- round(100 * typed / total, 1)
   hue <- round(pct * 1.2)  # 0=red, 120=green
   sprintf(
@@ -150,14 +232,15 @@ pct_bar <- function(typed, total) {
   )
 }
 
-# good_dir = +1 (higher is better) or -1 (lower is better)
-delta_html <- function(delta, good_dir = 1) {
+# good_dir = +1 (higher is better) or -1 (lower is better); fmt formats the
+# magnitude (e.g. "%.1f%%" for percentage points).
+delta_html <- function(delta, good_dir = 1, fmt = "%d") {
   if (is.na(delta)) return('<span class="delta delta-na">&mdash;</span>')
   if (delta == 0)  return('<span class="delta delta-zero">0</span>')
   good <- (delta > 0 && good_dir > 0) || (delta < 0 && good_dir < 0)
   cls <- if (good) "delta-good" else "delta-bad"
   sign <- if (delta > 0) "+" else "" # negative numbers already include their sign
-  sprintf('<span class="delta %s">%s%d</span>', cls, sign, delta)
+  sprintf(paste0('<span class="delta %s">%s', fmt, '</span>'), cls, sign, delta)
 }
 
 # Format a per-function timing value (seconds) for the dashboard. The runner
@@ -231,8 +314,12 @@ returns_only_empty <- function(sig) {
 
 # --- Status-change classification (vs baseline) ---
 # Rank statuses so we can colour a transition as an improvement or regression.
+# `fallback` (bound at its declared C signature after inference failed) sits
+# between a real typing and a failure; `skipped`/`unparseable` were never
+# attempted, so they rank with absence.
 status_rank <- function(s) {
-  switch(s, "typed" = 2L, "timeout" = 1L, "untypeable" = 1L, 0L)
+  switch(s, "typed" = 3L, "fallback" = 2L, "timeout" = 1L, "untypeable" = 1L,
+         "skipped" = 0L, "unparseable" = 0L, 0L)
 }
 
 # Returns a list(kind, html) describing how `now` differs from `before`.
@@ -308,11 +395,12 @@ checker_status_html <- function(meta = checker_meta, max_inline = 8L) {
   )
 }
 
-progress_card <- function(label, before, after, good_dir = 1) {
+progress_card <- function(label, before, after, good_dir = 1, fmt = "%d") {
   delta <- after - before
   sprintf(
-    '<div class="stat-card progress"><div class="value">%d</div><div class="label">%s</div><div class="progress-line">%d &rarr; %d %s</div></div>',
-    after, esc(label), before, after, delta_html(delta, good_dir)
+    '<div class="stat-card progress"><div class="value">%s</div><div class="label">%s</div><div class="progress-line">%s &rarr; %s %s</div></div>',
+    sprintf(fmt, after), esc(label), sprintf(fmt, before), sprintf(fmt, after),
+    delta_html(delta, good_dir, fmt)
   )
 }
 
@@ -582,26 +670,25 @@ fmt_time <- function(t) if (is.na(t)) '<span class="na">&mdash;</span>' else spr
 
 # Build a baseline lookup keyed by package name for quick delta computation.
 b_typed_by_pkg <- if (!is.null(b_summary_df)) {
-  setNames(b_summary_df$n_typed, b_summary_df$package)
+  setNames(b_nat$typed, b_summary_df$package)
 } else NULL
 
-extra_th <- if (!is.null(baseline_dir)) '<th>Change</th>' else ''
-h('<table><thead><tr>',
-  '<th>Package</th><th>Entrypoints</th><th>.Call</th><th>.C</th><th>.Fortran</th><th>.External</th>',
-  '<th>EP typing progress</th><th>Functions analysed</th>', extra_th,
-  '<th>Timed out</th><th>Typing progress</th><th>Typing time</th><th>Status</th>',
-  '</tr></thead><tbody>')
+pkg_table_th <- c('<th>Package</th>', '<th>Entrypoints</th>', '<th>.Call</th>', '<th>.C</th>',
+  '<th>.Fortran</th>', '<th>.External</th>', '<th>EP typing progress</th>',
+  '<th>Functions analysed</th>', if (!is.null(baseline_dir)) '<th>Change</th>',
+  '<th>Timed out</th>', '<th>Typing progress</th>', '<th>Typing time</th>', '<th>Status</th>')
+h('<table><thead><tr>', paste(pkg_table_th, collapse = ""), '</tr></thead><tbody>')
 for (i in seq_len(nrow(summary_df))) {
   r <- summary_df[i, ]
-  ep <- r$ep_call + r$ep_c + r$ep_fortran + r$ep_external
-  n_to <- if ("n_timeout" %in% names(r)) r$n_timeout else 0L
+  ep <- nat$ep[i]
+  n_to <- nat$timeout[i]
   badge <- if (r$crashed) '<span class="badge badge-crash">crashed</span>' else '<span class="badge badge-ok">OK</span>'
   pkg_link <- sprintf('<a href="pkg/%s.html">%s</a>', esc(r$package), esc(r$package))
 
   delta_td <- ""
   if (!is.null(baseline_dir)) {
     if (!is.null(b_typed_by_pkg) && r$package %in% names(b_typed_by_pkg)) {
-      d <- r$n_typed - as.integer(b_typed_by_pkg[r$package])
+      d <- nat$typed[i] - as.integer(b_typed_by_pkg[r$package])
       delta_td <- sprintf('<td class="num">%s</td>', delta_html(d, +1))
     } else {
       delta_td <- '<td class="num"><span class="delta delta-good">new</span></td>'
@@ -609,9 +696,9 @@ for (i in seq_len(nrow(summary_df))) {
   }
 
   h(sprintf('<tr><td class="pkg">%s</td><td class="num">%d</td><td class="num">%d</td><td class="num">%d</td><td class="num">%d</td><td class="num">%d</td><td>%s</td><td class="num">%d</td>%s<td class="num">%d</td><td>%s</td><td class="num">%s</td><td>%s</td></tr>',
-    pkg_link, ep, r$ep_call, r$ep_c, r$ep_fortran, r$ep_external,
-    pct_bar(r$n_ep_typed, ep), r$n_functions, delta_td, n_to,
-    pct_bar(r$n_typed, r$n_functions),
+    pkg_link, ep, nat$ep_call[i], nat$ep_c[i], nat$ep_fortran[i], nat$ep_external[i],
+    pct_bar(nat$ep_typed[i], ep), nat$n[i], delta_td, n_to,
+    pct_bar(nat$typed[i], nat$n[i]),
     fmt_time(r$elapsed_sec), badge))
 }
 
@@ -620,7 +707,7 @@ if (!is.null(b_summary_df)) {
   gone <- setdiff(b_summary_df$package, summary_df$package)
   for (pkg in gone) {
     h(sprintf('<tr><td class="pkg">%s</td><td colspan="%d"><span class="delta delta-bad">gone</span> (was in baseline, not in current run)</td></tr>',
-      esc(pkg), if (!is.null(baseline_dir)) 12L else 11L))
+      esc(pkg), length(pkg_table_th) - 1L))
   }
 }
 h('</tbody></table>')
@@ -628,7 +715,7 @@ h('</tbody></table>')
 # Per-function inference timing (only when --log-times produced data
 # for at least one package).
 has_timing_col <- "mean_typing_sec" %in% names(summary_df)
-if (has_timing_col && any(!is.na(summary_df$mean_typing_sec))) {
+if (HAVE_NATIVE && has_timing_col && any(!is.na(summary_df$mean_typing_sec))) {
   timing_rows <- summary_df[!is.na(summary_df$mean_typing_sec), , drop = FALSE]
   timing_rows <- timing_rows[order(-timing_rows$total_typing_sec), , drop = FALSE]
 
@@ -671,7 +758,7 @@ if (has_timing_col && any(!is.na(summary_df$mean_typing_sec))) {
 phase_cols <- c("phase_load_ty_sec", "phase_parsing_sec",
                 "phase_call_graph_sec", "phase_non_fundef_sec",
                 "phase_fundef_pass_sec")
-if (all(phase_cols %in% names(summary_df)) &&
+if (HAVE_NATIVE && all(phase_cols %in% names(summary_df)) &&
     any(!is.na(summary_df$phase_fundef_pass_sec))) {
   phase_rows <- summary_df[!is.na(summary_df$phase_fundef_pass_sec), , drop = FALSE]
   phase_rows <- phase_rows[order(-phase_rows$elapsed_sec), , drop = FALSE]
@@ -720,7 +807,7 @@ if (all(phase_cols %in% names(summary_df)) &&
 }
 
 # Error categories
-if (nrow(error_cats) > 0) {
+if (HAVE_NATIVE && nrow(error_cats) > 0) {
   h('<h2>Error and timeout categories</h2>')
   base_col <- if (!is.null(baseline_dir)) '<th style="text-align:right">Before</th><th style="text-align:right">&Delta;</th>' else ''
   h('<table><thead><tr><th>Error</th>', base_col, '<th style="text-align:right">Count</th></tr></thead><tbody>')
@@ -753,7 +840,8 @@ if (nrow(error_cats) > 0) {
 # red flag, not a failure, and can be legitimate (bail-out helpers that never
 # return, e.g. `bail_if`-style functions). Placed next to the error section
 # because it belongs to the same family of red flags.
-empty_counts_by_pkg <- function(fdf) {
+empty_counts_by_pkg <- function(fdf, side = "native", mode = "strict") {
+  fdf <- fdf[fdf$side == side & fdf$mode == mode, , drop = FALSE]
   if (nrow(fdf) == 0L) return(setNames(integer(0), character(0)))
   ty <- fdf[fdf$status == "typed", , drop = FALSE]
   if (nrow(ty) == 0L) return(setNames(integer(0), character(0)))
@@ -768,7 +856,7 @@ emp_base <- if (!is.null(b_functions_df)) empty_counts_by_pkg(b_functions_df) el
 total_empty      <- sum(emp_now)
 total_empty_base <- sum(emp_base)
 
-if (total_empty > 0L || length(emp_base) > 0L) {
+if (HAVE_NATIVE && (total_empty > 0L || length(emp_base) > 0L)) {
   pct_empty <- if (total_typed > 0L) round(100 * total_empty / total_typed, 1) else 0
   h('<h2>Functions typed as <code>empty</code> <small>typed, but the inferred result is <code>empty</code> (bottom)</small></h2>')
   h('<p class="phase-legend">An <code>empty</code> return means inference found no usable value &mdash; usually a red flag,',
@@ -779,7 +867,7 @@ if (total_empty > 0L || length(emp_base) > 0L) {
   base_for <- function(p) { v <- emp_base[p]; if (is.na(v)) 0L else as.integer(v) }
   pkgs <- union(names(emp_now), names(emp_base))
   pkgs <- pkgs[order(-vapply(pkgs, cur_for, integer(1)), pkgs)]
-  typed_by_pkg <- setNames(summary_df$n_typed, summary_df$package)
+  typed_by_pkg <- setNames(nat$typed, summary_df$package)
 
   base_col <- if (!is.null(baseline_dir)) '<th style="text-align:right">Before</th><th style="text-align:right">&Delta;</th>' else ''
   h('<table><thead><tr><th>Package</th><th style="text-align:right">Empty returns</th><th style="text-align:right">% of pkg typed</th>',
@@ -837,12 +925,10 @@ cat(sprintf("Wrote %s\n", output_file))
 
 # --- Build PER-PACKAGE pages ---
 
-# Baseline per-function status, keyed by "<package>\x1f<function_name>", for
-# detecting status changes on per-package pages. NULL when no baseline.
-SEP <- "\x1f"
+# Baseline per-function status, keyed by function_keys(), for detecting status
+# changes on per-package pages. NULL when no baseline.
 b_status_by_key <- if (!is.null(b_functions_df)) {
-  setNames(b_functions_df$status,
-           paste(b_functions_df$package, b_functions_df$function_name, sep = SEP))
+  setNames(b_functions_df$status, b_functions_df$key)
 } else NULL
 
 status_badge <- function(status) {
@@ -907,13 +993,13 @@ render_function_block <- function(pkg, name, status, type_sig, error_title, erro
 }
 
 write_package_page <- function(pkg) {
-  rows <- functions_df[functions_df$package == pkg, , drop = FALSE]
+  rows <- functions_df[functions_df$package == pkg &
+                       functions_df$side == "native" & functions_df$mode == "strict", , drop = FALSE]
   ep_tbl <- parse_ep_table(file.path(raw_dir, paste0(pkg, ".out")))
   ep_names <- unique(ep_tbl$name)
-  s <- summary_df[summary_df$package == pkg, , drop = FALSE]
-  if (nrow(s) == 0) return(invisible(NULL))
-  s <- s[1, ]
-  ep_total <- s$ep_call + s$ep_c + s$ep_fortran + s$ep_external
+  si <- match(pkg, summary_df$package)
+  if (is.na(si)) return(invisible(NULL))
+  ep_total <- nat$ep[si]
 
   ph <- character()
   ph <- c(ph, '<!DOCTYPE html>',
@@ -926,8 +1012,8 @@ write_package_page <- function(pkg) {
     '<a href="../index.html" class="back-link">&larr; all packages</a>',
     sprintf('<h1><span class="r">%s</span></h1>', esc(pkg)),
     sprintf('<p class="subtitle">%d functions analysed &middot; %d typed &middot; %d untypeable &middot; %d timed out &middot; %d entry points (%d typed)%s</p>',
-      s$n_functions, s$n_typed, s$n_untypeable, if ("n_timeout" %in% names(s)) s$n_timeout else 0L,
-      ep_total, s$n_ep_typed,
+      nat$n[si], nat$typed[si], nat$untypeable[si], nat$timeout[si],
+      ep_total, nat$ep_typed[si],
       checker_version_html()),
     checker_status_html())
 
@@ -937,24 +1023,25 @@ write_package_page <- function(pkg) {
   ep_missing <- setdiff(ep_set, ep_in_csv)
 
   have_baseline <- !is.null(b_status_by_key)
-  base_status_for <- function(nm) {
+  base_status_for <- function(key) {
     if (!have_baseline) return(NA_character_)
     # b_status_by_key is a named character vector, so `[[` on an absent key
     # errors ("subscript out of bounds") rather than returning NULL. Functions
     # newly reached by the call graph won't be in the baseline, so guard the key.
-    key <- paste(pkg, nm, sep = SEP)
     if (!(key %in% names(b_status_by_key))) return(NA_character_)
     unname(b_status_by_key[[key]])
   }
   # Functions present in the baseline for this package but absent now. Exclude
   # entry points already rendered as 'unknown' (ep_missing) so cards don't
   # double up and total_cards stays accurate.
-  gone_names <- if (have_baseline) {
-    b_here <- b_functions_df$function_name[b_functions_df$package == pkg]
-    sort(setdiff(setdiff(b_here, rows$function_name), ep_missing))
-  } else character()
+  gone <- if (have_baseline) {
+    b_here <- b_functions_df[b_functions_df$package == pkg &
+                             b_functions_df$side == "native" & b_functions_df$mode == "strict", , drop = FALSE]
+    b_here <- b_here[!(b_here$key %in% rows$key) & !(b_here$function_name %in% ep_missing), , drop = FALSE]
+    b_here[order(b_here$function_name), , drop = FALSE]
+  } else functions_df[0, , drop = FALSE]
 
-  total_cards <- nrow(rows) + length(ep_missing) + length(gone_names)
+  total_cards <- nrow(rows) + length(ep_missing) + nrow(gone)
 
   ph <- c(ph, sprintf('<h2>Functions <small>%d</small></h2>', total_cards))
   changed_filter <- if (have_baseline)
@@ -982,7 +1069,7 @@ write_package_page <- function(pkg) {
         r <- rows[i, ]
         is_ep <- r$function_name %in% ep_set
         change <- if (have_baseline)
-          change_info(r$status, base_status_for(r$function_name))
+          change_info(r$status, base_status_for(r$key))
         else list(kind = "unchanged", html = "")
         ph <- c(ph, render_function_block(pkg, r$function_name, r$status,
           r$type_sig, r$error_title, r$error_detail,
@@ -996,8 +1083,9 @@ write_package_page <- function(pkg) {
     # Functions that existed in the baseline but are gone now (status change:
     # disappeared). Rendered as lightweight cards so the "changed only" filter
     # surfaces regressions in coverage.
-    for (nm in gone_names) {
-      was <- base_status_for(nm)
+    for (j in seq_len(nrow(gone))) {
+      nm  <- gone$function_name[j]
+      was <- gone$status[j]
       ph <- c(ph, sprintf(
         '<div class="func-list" data-status="gone" data-entry="%s" data-conv="" data-name="%s" data-changed="true" data-empty-ret="false"><h3>%s <span class="badge badge-change-bad">gone</span></h3><div class="error-line">was <strong>%s</strong> in the baseline; no longer typed/reached in this run</div></div>',
         if (nm %in% ep_set) "true" else "false", esc(tolower(nm)), esc(nm), esc(was)))

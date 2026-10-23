@@ -142,6 +142,34 @@ gradual_key <- function(key) sub(paste0(SEP, "strict$"), paste0(SEP, "gradual"),
 functions_df$key <- function_keys(functions_df)
 if (!is.null(b_functions_df)) b_functions_df$key <- function_keys(b_functions_df)
 
+# Which C functions are analysed is not fixed: TypR keeps those the entry
+# points reach, and all of them when it finds no entry point (e.g. the R side
+# did not parse). Raw typed counts would then credit or blame functions for
+# entering or leaving the count, so native deltas are taken over the functions
+# both runs analysed, and the change of scope is reported apart. One row per
+# package present in both runs.
+native_scope <- NULL
+if (!is.null(b_functions_df)) {
+  pkg_levels <- union(summary_df$package, b_summary_df$package)
+  typed_by_key <- function(df) {
+    nd <- df[df$side == "native" & df$mode == "strict", , drop = FALSE]
+    split(setNames(nd$status == "typed", nd$key), factor(nd$package, levels = pkg_levels))
+  }
+  now_t    <- typed_by_key(functions_df)
+  before_t <- typed_by_key(b_functions_df)
+  pkgs <- intersect(summary_df$package, b_summary_df$package)
+  native_scope <- data.frame(package = pkgs,
+    added   = vapply(pkgs, function(p) sum(!(names(now_t[[p]]) %in% names(before_t[[p]]))), integer(1)),
+    removed = vapply(pkgs, function(p) sum(!(names(before_t[[p]]) %in% names(now_t[[p]]))), integer(1)),
+    typed_now = vapply(pkgs, function(p) {
+      a <- now_t[[p]]; sum(a[names(a) %in% names(before_t[[p]])]) }, integer(1)),
+    typed_before = vapply(pkgs, function(p) {
+      b <- before_t[[p]]; sum(b[names(b) %in% names(now_t[[p]])]) }, integer(1)),
+    row.names = pkgs, stringsAsFactors = FALSE)
+}
+scope_moved <- function(pkg) !is.null(native_scope) && pkg %in% native_scope$package &&
+  native_scope[pkg, "added"] + native_scope[pkg, "removed"] > 0L
+
 raw_dir <- "work/raw_output"
 sources_root <- "work/sources"
 pkg_dir <- file.path(dirname(output_file), "pkg")
@@ -891,9 +919,15 @@ if (HAVE_R) {
   h(stat_card(hard, "Real typing failures",
     paste0("untypeable or timed out even in gradual mode",
            card_delta(hard, if (is.null(b_rs)) NA else b_tot(b_rs$g_untypeable) + b_tot(b_rs$g_timeout), -1))))
+  moved <- if (is.null(native_scope)) native_scope else
+    native_scope[native_scope$added + native_scope$removed > 0L, , drop = FALSE]
   h(stat_card(pct_str(total_typed, total_functions), "Native functions typed",
-    sprintf("%d / %d C functions reachable from an entry point%s", total_typed, total_functions,
-            card_delta(total_typed, if (is.null(b_nat)) NA else tot(b_nat$typed)))))
+    sprintf("%d / %d C functions reachable from an entry point%s%s", total_typed, total_functions,
+            if (is.null(native_scope)) "" else
+              card_delta(sum(native_scope$typed_now), sum(native_scope$typed_before)),
+            if (NROW(moved) == 0L) "" else sprintf(
+              '<br><span title="the change counts only C functions analysed in both runs">scope changed in %d package%s (+%d / &minus;%d functions)</span>',
+              nrow(moved), if (nrow(moved) == 1L) "" else "s", sum(moved$added), sum(moved$removed)))))
   h(stat_card(pct_str(tot(nat$ep_linked), total_ep), "Native &rarr; R link rate",
     sprintf("%d / %d entry points bound in R", tot(nat$ep_linked), total_ep)))
   h('</div>')
@@ -951,6 +985,30 @@ cell_delta <- function(now, by_pkg, pkg) {
 }
 chip <- function(n, what) if (isTRUE(n > 0)) sprintf(' <span class="chip">%d %s</span>', as.integer(n), what) else ""
 
+# Typed change over the C functions both runs analysed (see native_scope).
+b_common_typed_by_pkg <- if (!is.null(native_scope))
+  setNames(native_scope$typed_before, native_scope$package) else NULL
+native_typed_delta <- function(pkg)
+  cell_delta(if (is.null(native_scope)) NA else native_scope[pkg, "typed_now"], b_common_typed_by_pkg, pkg)
+
+# "36 -> 22" beside the function count of a package whose analysed C functions
+# differ from the baseline's, with the likely reason as a tooltip.
+scope_badge <- function(i) {
+  pkg <- summary_df$package[i]
+  if (!scope_moved(pkg)) return("")
+  j <- match(pkg, b_summary_df$package)
+  why <- if (isTRUE(b_nat$ep[j] == 0 && nat$ep[i] > 0))
+    "entry points found: only the C functions they reach are analysed now"
+  else if (isTRUE(b_nat$ep[j] > 0 && nat$ep[i] == 0))
+    "no entry point found any more: every C function is analysed now"
+  else if (isTRUE(b_nat$ep[j] != nat$ep[i]))
+    sprintf("%s entry points found (%d &rarr; %d), reaching a different set of C functions",
+      if (nat$ep[i] > b_nat$ep[j]) "more" else "fewer", as.integer(b_nat$ep[j]), as.integer(nat$ep[i]))
+  else "the set of analysed C functions changed"
+  sprintf(' <span class="badge badge-change-neutral" title="%s (+%d / &minus;%d since the baseline run). The typed change counts only functions analysed in both runs.">%d &rarr; %d</span>',
+    why, native_scope[pkg, "added"], native_scope[pkg, "removed"], as.integer(b_nat$n[j]), as.integer(nat$n[i]))
+}
+
 if (HAVE_R) {
   pkg_table_th <- c('<th>Package</th>', '<th class="grp-start">Functions</th>', '<th>Typed</th>',
     '<th class="grp-start">EPs</th>', '<th>Bound in R</th>',
@@ -967,10 +1025,10 @@ if (HAVE_R) {
     pkg_link <- sprintf('<a href="pkg/%s.html">%s</a>', esc(pkg), esc(pkg))
     no_c <- !isTRUE(nat$n_c_files[i] > 0) && !isTRUE(nat$n[i] > 0)
     native_cells <- if (no_c) '<td class="grp-start" colspan="4"><span class="na">no native code</span></td>' else
-      sprintf('<td class="num grp-start">%d</td><td>%s%s%s</td><td class="num grp-start"><span title=".Call %d &middot; .C %d &middot; .Fortran %d &middot; .External %d">%d</span></td><td>%s</td>',
-        nat$n[i],
+      sprintf('<td class="num grp-start">%d%s</td><td>%s%s%s</td><td class="num grp-start"><span title=".Call %d &middot; .C %d &middot; .Fortran %d &middot; .External %d">%d</span></td><td>%s</td>',
+        nat$n[i], scope_badge(i),
         pct_bar(nat$typed[i], nat$n[i], if (nat$ep[i] == 0) "no entry point" else "no functions analysed"),
-        chip(nat$timeout[i], "timed out"), cell_delta(nat$typed[i], b_typed_by_pkg, pkg),
+        chip(nat$timeout[i], "timed out"), native_typed_delta(pkg),
         nat$ep_call[i], nat$ep_c[i], nat$ep_fortran[i], nat$ep_external[i], nat$ep[i],
         pct_bar(nat$ep_linked[i], nat$ep[i], "no entry point"))
     gap <- rs$g_typed[i] - rs$typed[i]
@@ -1615,10 +1673,19 @@ write_package_page <- function(pkg) {
 
   baseline_change <- function(r) if (have_baseline)
     change_info(r$status, base_status_for(r$key)) else list(kind = "unchanged", html = "")
-  gone_card <- function(g, side) sprintf(
-    '<div class="func-list" data-side="%s" data-status="gone" data-entry="%s" data-conv="" data-name="%s" data-changed="true" data-empty-ret="false"><h3>%s <span class="badge badge-change-bad">gone</span></h3><div class="error-line">was <strong>%s</strong> in the baseline; no longer typed/reached in this run</div></div>',
-    side, if (g$function_name %in% ep_set) "true" else "false", esc(tolower(g$function_name)),
-    esc(g$function_name), esc(g$status))
+  # A native function leaving a package whose scope moved was dropped from the
+  # analysis, not lost: neutral rather than red.
+  gone_card <- function(g, side) {
+    dropped <- side == "native" && scope_moved(pkg)
+    sprintf(
+      '<div class="func-list" data-side="%s" data-status="gone" data-entry="%s" data-conv="" data-name="%s" data-changed="true" data-empty-ret="false"><h3>%s <span class="badge %s">%s</span></h3><div class="error-line">was <strong>%s</strong> in the baseline; %s</div></div>',
+      side, if (g$function_name %in% ep_set) "true" else "false", esc(tolower(g$function_name)),
+      esc(g$function_name),
+      if (dropped) "badge-change-neutral" else "badge-change-bad", if (dropped) "not analysed" else "gone",
+      esc(g$status),
+      if (dropped) "the set of analysed C functions changed and no longer includes it"
+      else "no longer typed/reached in this run")
+  }
 
   if (total_cards == 0) {
     ph <- c(ph, '<p class="na">No functions recorded.</p>')

@@ -69,8 +69,9 @@ if [ -n "${RUN_TIMEOUT:-}" ] && [ "$RUN_TIMEOUT" != 0 ]; then
     LIMIT_PREFIX=(timeout --kill-after=30 "$RUN_TIMEOUT")
 fi
 
-# A stale report from an earlier run would be read as this run's.
-rm -f "$OUT_DIR/$PKG_NAME.jsonl"
+# Stale files from an earlier run would be read as this run's, should this
+# one be killed before writing its own.
+rm -f "$OUT_DIR/$PKG_NAME".{jsonl,exit,time}
 
 START=$(date +%s.%N)
 (

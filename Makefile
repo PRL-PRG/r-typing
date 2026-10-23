@@ -11,10 +11,13 @@ FUN_TIMEOUT ?= 20
 
 # Memory. vctrs alone peaks near 14 GB, and its strict and gradual runs start
 # together. GNU parallel starts no new run while less than MEMFREE is free,
-# and when free memory falls below half of it, kills the youngest run and
-# queues it again: big runs end up one after the other instead of exhausting
-# the machine (CI runners have 16 GB).
+# and when free memory falls below half of it, kills the youngest run; with
+# --retries that run is queued again. Big runs end up one after the other
+# instead of exhausting the machine (CI runners have 16 GB). A run killed
+# more than RETRIES times is recorded as exit 137 below, so the dashboard
+# shows it rather than losing it.
 MEMFREE ?= 4G
+RETRIES ?= 3
 # Optional caps on a single run, applied by run_one_package.sh so a capped run
 # is still recorded: RUN_TIMEOUT in seconds (exit 124), MEM_LIMIT_MB on the
 # checker's address space. 0 or empty disables them.
@@ -84,8 +87,16 @@ work/.typecheck_done: work/.extract_done $(CHECKER)
 	@mkdir -p work/raw_output
 	@bash scripts/record_checker_version.sh "$(CHECKER_DIR)" work
 	find work/sources -mindepth 1 -maxdepth 1 -type d \
-		| parallel -j$(NPROC) --timeout $(TIMEOUT) --memfree $(MEMFREE) --bar \
-			bash scripts/run_one_package.sh {1} work/raw_output {2} :::: - ::: $(MODES)
+		| parallel -j$(NPROC) --timeout $(TIMEOUT) --memfree $(MEMFREE) --retries $(RETRIES) \
+			--joblog work/typecheck.joblog --bar \
+			bash scripts/run_one_package.sh {1} work/raw_output {2} :::: - ::: $(MODES) \
+		|| { echo "Some runs did not finish; see work/typecheck.joblog:"; \
+		     awk 'NR == 1 || $$7 != 0' work/typecheck.joblog; }
+	@for d in work/sources/*/; do p=$$(basename "$$d"); for m in $(MODES); do \
+		[ -f "work/raw_output/$$m/$$p.exit" ] && continue; \
+		echo "$$p ($$m): killed before finishing, recorded as exit 137"; \
+		mkdir -p "work/raw_output/$$m"; echo 137 > "work/raw_output/$$m/$$p.exit"; \
+	done; done
 	touch $@
 
 typecheck: work/.typecheck_done

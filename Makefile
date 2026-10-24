@@ -37,7 +37,7 @@ MODES ?= strict gradual
 # the measurements come from the JSONL report either way.
 FALLBACK ?= 1
 LOG_TIMINGS ?= 0
-CHECKER_OPTS ?=
+CHECKER_OPTS ?= --lambda-rec 5
 ifeq ($(FALLBACK),1)
 CHECKER_OPTS += --fallback-c-signature
 endif

@@ -5,3 +5,6 @@ vctrs
 curl
 clue
 utf8
+prettyunits
+R6
+withr

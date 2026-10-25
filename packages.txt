@@ -8,3 +8,8 @@ utf8
 prettyunits
 R6
 withr
+pwr
+sandwich
+ssh
+zoo
+tidyr

@@ -28,6 +28,11 @@ jobs:
     # `container:` does not lowercase the reference: keep it lowercase here.
     container:
       image: ghcr.io/prl-prg/typr:latest
+    # The image sets no locale, so R runs in the POSIX one and write.csv
+    # escapes every non-ASCII character of the UTF-8 strings jsonlite reads
+    # (the ∀ of polymorphic types became <U+2200> in the dashboard).
+    env:
+      LC_ALL: C.UTF-8
 
     steps:
       - uses: actions/checkout@v6

@@ -332,6 +332,42 @@ is_paren_arrow <- function(p) {
   ch <- strsplit(p, "")[[1]]
   length(ch) > 1L && ch[1] == "(" && identical(closing_paren(ch), length(ch)) && grepl("->", p, fixed = TRUE)
 }
+# The arrow of a function type, "D -> R" or "D --> R": the first one at
+# nesting depth 0 (an arrow in a parameter type is nested), in bold, and the
+# return type R marked, so that it can be found at a glance. A type that is
+# not an arrow at depth 0 is tried inside its outer parentheses, as in the
+# R form "((x: A) -> R)<> with { }"; anything else is printed as is.
+arrow_html <- function(s) {
+  ch <- strsplit(s, "")[[1]]
+  n <- length(ch); depth <- 0L; i <- 1L
+  while (i < n) {
+    c <- ch[i]
+    if (c %in% c("(", "[", "{")) depth <- depth + 1L
+    else if (c %in% c(")", "]", "}")) depth <- depth - 1L
+    else if (depth == 0L && c == "-" && ch[i + 1L] %in% c(">", "-")) {
+      len <- if (ch[i + 1L] == ">") 2L else if (i + 2L <= n && ch[i + 2L] == ">") 3L else 0L
+      if (len > 0L) {
+        dom <- if (i > 1L) paste(ch[1:(i - 1L)], collapse = "") else ""
+        arr <- paste(ch[i:(i + len - 1L)], collapse = "")
+        ret <- if (i + len <= n) paste(ch[(i + len):n], collapse = "") else ""
+        return(sprintf('%s<b class="ty-arrow">%s</b><span class="ty-ret">%s</span>',
+                       esc(dom), esc(arr), esc(ret)))
+      }
+    }
+    i <- i + 1L
+  }
+  if (n > 2L && ch[1] == "(") {
+    j <- closing_paren(ch)
+    if (!is.na(j) && j > 2L) {
+      inner <- paste(ch[2:(j - 1L)], collapse = "")
+      if (grepl("->", inner, fixed = TRUE))
+        return(paste0("(", arrow_html(inner), ")",
+                      if (j < n) esc(paste(ch[(j + 1L):n], collapse = "")) else ""))
+    }
+  }
+  esc(s)
+}
+
 type_sig_html <- function(s) {
   if (is.na(s) || !nzchar(s)) return(esc(s))
   quant <- ""; rest <- s
@@ -351,11 +387,13 @@ type_sig_html <- function(s) {
       }
     }
   }
-  if (length(parts) < 2L || !all(vapply(parts, is_paren_arrow, logical(1)))) return(esc(s))
+  if (length(parts) < 2L || !all(vapply(parts, is_paren_arrow, logical(1))))
+    return(paste0(if (nzchar(quant)) sprintf('<span class="ovl-quant">%s</span> ', esc(quant)) else "",
+                  arrow_html(rest)))
   ovls <- vapply(seq_along(parts), function(k) {
     p <- parts[k]
     cls <- c("ovl", if (k %% 2L == 0L) "ovl-alt", if (grepl("-> empty\\)$", p)) "ovl-err")
-    sprintf('<span class="%s">%s</span>', paste(cls, collapse = " "), esc(p))
+    sprintf('<span class="%s">%s</span>', paste(cls, collapse = " "), arrow_html(p))
   }, character(1))
   paste0(if (nzchar(quant)) sprintf('<span class="ovl-quant">%s</span> ', esc(quant)) else "",
          if (nzchar(open)) esc(open) else "",
@@ -799,6 +837,8 @@ common_style <- function() {
     '.type-sig .ovl-err { opacity: .6; }',
     '.type-sig .ovl-and { color: var(--accent); margin: 0 .3rem; }',
     '.type-sig .ovl-quant, .type-sig .ovl-close { color: var(--muted); }',
+    '.type-sig .ty-arrow { color: #b45309; font-weight: 800; margin: 0 .1rem; }',
+    '.type-sig .ty-ret { font-weight: 600; }',
     '.timing { font-family: "JetBrains Mono", monospace; font-size: .8rem; color: var(--muted); margin-top: .25rem; }',
     '.error-line { font-family: "JetBrains Mono", monospace; font-size: .85rem; color: var(--bad); white-space: pre-wrap; }',
     '.error-detail pre { font-family: "JetBrains Mono", monospace; font-size: .8rem; background: #f8f8f8; padding: .5rem; border-radius: 4px; overflow-x: auto; white-space: pre-wrap; }',

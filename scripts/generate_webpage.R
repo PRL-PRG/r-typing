@@ -292,6 +292,77 @@ esc <- function(x) {
   x
 }
 
+# --- Function types: one overload per line ---
+# A function type is often an intersection of arrows, its overloads:
+# "∀'a. ([A] -> B) & ([C] -> D)", or for an R closure
+# "∀'a. (((x: A) -> B) & ((x: C) -> D))<> with { }". Printed as one string, the
+# overloads are hard to tell apart; type_sig_html shades them alternately and
+# puts the top-level & in bold. The type is split at the &s of
+# nesting depth 0 (counting (), [] and {}, not <>: "->" contains a ">"), and
+# only when every part is a parenthesized arrow; any other type is printed as
+# is.
+split_top_and <- function(s) {
+  ch <- strsplit(s, "")[[1]]
+  depth <- 0L; start <- 1L; parts <- character(); i <- 1L; n <- length(ch)
+  while (i <= n) {
+    c <- ch[i]
+    if (c %in% c("(", "[", "{")) depth <- depth + 1L
+    else if (c %in% c(")", "]", "}")) depth <- depth - 1L
+    else if (depth == 0L && c == "&" && i > 1L && i < n && ch[i - 1L] == " " && ch[i + 1L] == " ") {
+      parts <- c(parts, paste(ch[start:(i - 2L)], collapse = ""))
+      start <- i + 2L
+    }
+    i <- i + 1L
+  }
+  c(parts, paste(ch[start:n], collapse = ""))
+}
+# The position of the parenthesis closing the one at position 1, or NA.
+closing_paren <- function(ch) {
+  depth <- 0L
+  for (i in seq_along(ch)) {
+    if (ch[i] %in% c("(", "[", "{")) depth <- depth + 1L
+    else if (ch[i] %in% c(")", "]", "}")) {
+      depth <- depth - 1L
+      if (depth == 0L) return(i)
+    }
+  }
+  NA_integer_
+}
+is_paren_arrow <- function(p) {
+  ch <- strsplit(p, "")[[1]]
+  length(ch) > 1L && ch[1] == "(" && identical(closing_paren(ch), length(ch)) && grepl("->", p, fixed = TRUE)
+}
+type_sig_html <- function(s) {
+  if (is.na(s) || !nzchar(s)) return(esc(s))
+  quant <- ""; rest <- s
+  m <- regmatches(s, regexec("^(\u2200[^.]*\\.) (.*)$", s))[[1]]
+  if (length(m) == 3L) { quant <- m[2]; rest <- m[3] }
+  open <- ""; close <- ""
+  parts <- split_top_and(rest)
+  if (length(parts) < 2L && startsWith(rest, "(")) {
+    ch <- strsplit(rest, "")[[1]]
+    j <- closing_paren(ch)
+    if (!is.na(j) && j > 2L) {
+      inner <- paste(ch[2:(j - 1L)], collapse = "")
+      inner_parts <- split_top_and(inner)
+      if (length(inner_parts) >= 2L) {
+        parts <- inner_parts; open <- "("
+        close <- paste0(")", if (j < length(ch)) paste(ch[(j + 1L):length(ch)], collapse = "") else "")
+      }
+    }
+  }
+  if (length(parts) < 2L || !all(vapply(parts, is_paren_arrow, logical(1)))) return(esc(s))
+  ovls <- vapply(seq_along(parts), function(k) {
+    p <- parts[k]
+    cls <- c("ovl", if (k %% 2L == 0L) "ovl-alt", if (grepl("-> empty\\)$", p)) "ovl-err")
+    sprintf('<span class="%s">%s</span>', paste(cls, collapse = " "), esc(p))
+  }, character(1))
+  paste0(if (nzchar(quant)) sprintf('<span class="ovl-quant">%s</span> ', esc(quant)) else "",
+         if (nzchar(open)) esc(open) else "",
+         paste(ovls, collapse = '<b class="ovl-and">&amp;</b>'),
+         if (nzchar(close)) sprintf('<span class="ovl-close">%s</span>', esc(close)) else "")
+}
+
 pct_bar <- function(typed, total, empty_label = "no functions analysed") {
   if (is.na(total) || total == 0) return(sprintf('<span class="na">%s</span>', empty_label))
   pct <- round(100 * typed / total, 1)
@@ -723,6 +794,11 @@ common_style <- function() {
     '.func-list { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; margin-bottom: 1rem; }',
     '.func-list h3 { font-family: "JetBrains Mono", monospace; font-size: 1rem; margin-bottom: .25rem; }',
     '.type-sig { font-family: "JetBrains Mono", monospace; font-size: .85rem; color: var(--text); white-space: pre-wrap; word-break: break-word; }',
+    '.type-sig .ovl { background: #dbeafe; border-radius: 3px; padding: 0 .15rem; box-decoration-break: clone; -webkit-box-decoration-break: clone; }',
+    '.type-sig .ovl-alt { background: #fef3c7; }',
+    '.type-sig .ovl-err { opacity: .6; }',
+    '.type-sig .ovl-and { color: var(--accent); margin: 0 .3rem; }',
+    '.type-sig .ovl-quant, .type-sig .ovl-close { color: var(--muted); }',
     '.timing { font-family: "JetBrains Mono", monospace; font-size: .8rem; color: var(--muted); margin-top: .25rem; }',
     '.error-line { font-family: "JetBrains Mono", monospace; font-size: .85rem; color: var(--bad); white-space: pre-wrap; }',
     '.error-detail pre { font-family: "JetBrains Mono", monospace; font-size: .8rem; background: #f8f8f8; padding: .5rem; border-radius: 4px; overflow-x: auto; white-space: pre-wrap; }',
@@ -1153,7 +1229,7 @@ if (HAVE_R && !is.null(links_df)) {
       h(sprintf('<tr><td class="pkg"><a href="pkg/%s.html">%s</a></td><td class="error-row"><code>%s</code></td><td><code>%s</code></td><td>%s</td><td class="type-sig">%s</td></tr>',
         esc(nb$package[i]), esc(nb$package[i]), esc(nb$r_name[i]), esc(nb$symbol[i]),
         reason_label(nb$reject_reason[i]),
-        if (is.na(nb$native_type[i])) '<span class="na">&mdash;</span>' else esc(nb$native_type[i])))
+        if (is.na(nb$native_type[i])) '<span class="na">&mdash;</span>' else type_sig_html(nb$native_type[i])))
     }
     h('</tbody></table>')
   }
@@ -1532,7 +1608,7 @@ render_function_block <- function(pkg, r, g = NULL, is_entry = FALSE, entry_conv
     empty_badge))
   if (status %in% c("typed", "fallback")) {
     if (!is.na(r$type_sig) && nzchar(r$type_sig)) {
-      hh <- c(hh, sprintf('<div class="type-sig">%s</div>', esc(r$type_sig)))
+      hh <- c(hh, sprintf('<div class="type-sig">%s</div>', type_sig_html(r$type_sig)))
     }
   }
   if (status != "typed") {
@@ -1555,7 +1631,7 @@ render_function_block <- function(pkg, r, g = NULL, is_entry = FALSE, entry_conv
   }
   # The gradual run, when it saw this definition differently.
   if (!is.null(g) && (!identical(status, status_g) || !identical(r$type_sig, g$type_sig))) {
-    body <- if (isTRUE(!is.na(g$type_sig))) sprintf('<div class="type-sig">%s</div>', esc(g$type_sig))
+    body <- if (isTRUE(!is.na(g$type_sig))) sprintf('<div class="type-sig">%s</div>', type_sig_html(g$type_sig))
             else if (isTRUE(!is.na(g$error_title))) sprintf('<div class="error-line">%s</div>', esc(g$error_title))
             else ""
     hh <- c(hh, sprintf('<details><summary>gradual mode: %s</summary>%s</details>', esc(status_g), body))

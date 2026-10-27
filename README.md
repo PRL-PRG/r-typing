@@ -43,6 +43,7 @@ This runs the full pipeline: **download → extract → typecheck → results**.
 | `CHECKER_OPTS` | *(empty)* | Extra flags passed to the checker |
 | `FALLBACK` | `1` | When `FALLBACK=1`, appends `--fallback-c-signature` to `CHECKER_OPTS`. Binds native functions that fail body inference at their declared C signature, so their R callers don't cascade as "unbound variable". Such functions are reported as `fallback`, not `typed`. |
 | `LOG_TIMINGS` | `0` | When `LOG_TIMINGS=1`, appends `--log-times`: NativeSem's per-function timing lines in the `.out` files. The measurements come from the JSONL report either way. |
+| `LIBRARY` | `work/library` | Where `make install` installs the packages, for fuzzing |
 | `BASELINE` | auto-detects `results.prev/` | Directory whose CSVs are diffed against the current run when generating the dashboard. Set `BASELINE=none` to disable, or `BASELINE=results.something` to compare against a specific snapshot. |
 | `PERF` | `0` | When `PERF=1`, each package run is wrapped with `perf record` (see [Profiling](#profiling) below). |
 | `PERF_OPTS` | `-F 99 --call-graph dwarf` | Flags passed to `perf record`. Override to change sample rate or unwind mode. |
@@ -66,6 +67,7 @@ TypR parses its flags with OCaml's `Arg`: an unknown flag fails the run with exi
 | `make` / `make all` | Run the full pipeline |
 | `make download` | Download source tarballs from CRAN |
 | `make extract` | Extract tarballs into `work/sources/` |
+| `make install` | Install each package from its tarball into `LIBRARY`, for fuzzing (see [Fuzzing](#fuzzing)) |
 | `make typecheck` | Run TypR on each package, in each mode (via GNU parallel) |
 | `make snapshot` | If `results/summary.csv` exists, move `results/` to `results.prev/` so the next run can use it as a baseline. Run automatically as a prerequisite of `make results`. |
 | `make results` | Parse the JSONL reports into CSV files (snapshots first) |

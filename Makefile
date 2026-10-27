@@ -59,7 +59,7 @@ BASELINE ?= $(shell test -f results.prev/summary.csv && echo results.prev)
 
 export CHECKER_DIR CHECKER PRELUDE TS_LIB_DIR FUN_TIMEOUT CHECKER_OPTS PERF PERF_OPTS RUN_TIMEOUT MEM_LIMIT_MB
 
-.PHONY: all download extract typecheck results snapshot webpage dashboard discover build-checker trends clean clean-results perf-report
+.PHONY: all download extract install typecheck results snapshot webpage dashboard discover build-checker trends clean clean-results perf-report
 
 all: results
 
@@ -81,6 +81,18 @@ work/.extract_done: work/.download_done
 	touch $@
 
 extract: work/.extract_done
+
+# --- Install the packages, for fuzzing their inferred types ---
+# Each from its own tarball, into LIBRARY; dependencies from CRAN (binaries
+# when bspm is installed, as in the TypR image). Failures are recorded in
+# LIBRARY/install_status.csv, not fatal.
+LIBRARY ?= work/library
+
+work/.install_done: work/.download_done scripts/install_packages.R
+	Rscript scripts/install_packages.R work/tarballs $(LIBRARY)
+	touch $@
+
+install: work/.install_done
 
 # --- Run type checker ---
 work/.typecheck_done: work/.extract_done $(CHECKER)

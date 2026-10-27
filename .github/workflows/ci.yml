@@ -8,6 +8,20 @@ on:
     # r-c-typing-updated: the legacy nativesem dispatch, kept as a fallback.
     types: [typr-updated, r-c-typing-updated]
   workflow_dispatch:
+    inputs:
+      fuzz:
+        description: "Also fuzz the inferred types (FUZZ=1): installs the packages, then calls their functions in a sandbox"
+        type: boolean
+        default: false
+      sandbox:
+        description: "Sandbox of the fuzzed calls: bwrap, or none (the runner, a throwaway VM, is then the only boundary)"
+        type: choice
+        options: [bwrap, none]
+        default: bwrap
+      image:
+        description: "TypR image to run (default ghcr.io/prl-prg/typr:latest; :fuzz is built from typr's fuzz branch)"
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -26,13 +40,22 @@ jobs:
     # libtree-sitter.so and provenance.json, with CHECKER_DIR / CHECKER /
     # TS_LIB_DIR already set, plus ctags and jsonlite for the dashboard.
     # `container:` does not lowercase the reference: keep it lowercase here.
+    # Fuzzing with bwrap needs a container allowed to create namespaces and
+    # mount (scripts/fuzz_sandbox.sh); systempaths=unconfined lets it mount a
+    # fresh /proc.
     container:
-      image: ghcr.io/prl-prg/typr:latest
+      image: ${{ inputs.image || 'ghcr.io/prl-prg/typr:latest' }}
+      options: ${{ inputs.fuzz && inputs.sandbox != 'none' && '--cap-add SYS_ADMIN --security-opt seccomp=unconfined --security-opt apparmor=unconfined --security-opt systempaths=unconfined' || '' }}
     # The image sets no locale, so R runs in the POSIX one and write.csv
     # escapes every non-ASCII character of the UTF-8 strings jsonlite reads
     # (the ∀ of polymorphic types became <U+2200> in the dashboard).
     env:
       LC_ALL: C.UTF-8
+      FUZZ: ${{ inputs.fuzz && '1' || '0' }}
+      FUZZ_SANDBOX: ${{ inputs.sandbox || 'bwrap' }}
+      # Without a sandbox, the runner is the boundary: a VM thrown away
+      # after the job, whose results are only what it uploads.
+      FUZZ_UNSAFE: ${{ inputs.sandbox == 'none' && '1' || '0' }}
 
     steps:
       - uses: actions/checkout@v6
@@ -68,6 +91,20 @@ jobs:
       - name: Extract tarballs
         run: make extract
 
+      # Fail now rather than after the install if the container cannot host
+      # the sandbox.
+      - name: Check the fuzzing sandbox
+        if: env.FUZZ == '1' && env.FUZZ_SANDBOX == 'bwrap'
+        run: |
+          bwrap --ro-bind / / --dev /dev --tmpfs /tmp --unshare-all --die-with-parent --proc /proc true \
+            || bwrap --ro-bind / / --dev /dev --tmpfs /tmp --unshare-all --die-with-parent --ro-bind /proc /proc true
+
+      # In the same container as the fuzzing: bspm puts dependencies in its
+      # system library.
+      - name: Install packages
+        if: env.FUZZ == '1'
+        run: make install
+
       - name: Run type checker
         run: make typecheck
 
@@ -79,6 +116,18 @@ jobs:
         with:
           name: results-${{ github.run_number }}
           path: results/
+
+      # The fuzzing's raw files (samples, harness results and logs) and what
+      # installed, for debugging: the dashboard has only its verdicts.
+      - name: Upload fuzzing files
+        if: always() && env.FUZZ == '1'
+        uses: actions/upload-artifact@v7
+        with:
+          name: fuzz-${{ github.run_number }}
+          path: |
+            work/raw_output/strict/fuzz/
+            work/library/install_status.csv
+          if-no-files-found: ignore
 
       - name: Upload dashboard for GitHub Pages
         if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)

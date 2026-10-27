@@ -120,6 +120,18 @@ The packages must be installed (`make install`, a prerequisite of `make typechec
 | `FUZZ_UNSAFE` | `0` | Must be `1` for `FUZZ_SANDBOX=none` |
 | `FUZZ_HARNESS` | the image's, or `$(TYPR_DIR)/fuzz` | Directory of TypR's `harness.R` and `describe.R` |
 
+In CI, fuzzing is off: pushes and TypR's dispatches never fuzz. A manual run of the *Pipeline* workflow can turn it on, with three inputs:
+
+- `fuzz`: installs the packages and runs with `FUZZ=1`. With bwrap, the job's container gets the privileges above (plus `--security-opt systempaths=unconfined`, for a fresh `/proc`), and a first step checks that bwrap works before the install.
+- `sandbox`: `bwrap` (default) or `none`. With `none`, the runner is the boundary: a VM thrown away after the job, which keeps only the artifacts it uploads.
+- `image`: the TypR image, `ghcr.io/prl-prg/typr:latest` by default. TypR's `fuzz` branch builds `ghcr.io/prl-prg/typr:fuzz`.
+
+```bash
+gh workflow run ci.yml --ref main -f fuzz=true -f image=ghcr.io/prl-prg/typr:fuzz
+```
+
+Besides `results-<n>`, such a run uploads `fuzz-<n>`: the fuzz directories and `install_status.csv`. A run on `main` publishes the dashboard with its fuzzing section; the next run without fuzzing publishes it without.
+
 ## Profiling
 
 Run any package (or the full pipeline) under `perf record` to get a sampling profile of the checker. Each run gets its own `.perf.data` file alongside the `.jsonl` / `.out` / `.time` / `.exit` outputs, so you can inspect them independently.

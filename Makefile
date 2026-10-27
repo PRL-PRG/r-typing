@@ -57,7 +57,24 @@ PERF_OPTS ?= -F 99 --call-graph dwarf
 # entirely with `make webpage BASELINE=none`.
 BASELINE ?= $(shell test -f results.prev/summary.csv && echo results.prev)
 
+# Fuzzing of the inferred types (FUZZ=1): the strict runs also call the
+# packages' functions on values drawn inside and just outside their inferred
+# domains (see the README). The packages must be installed: `make install`
+# then comes before `make typecheck`. FUZZ_SANDBOX=bwrap (the default) or
+# none (with FUZZ_UNSAFE=1): see scripts/fuzz_sandbox.sh.
+FUZZ ?= 0
+FUZZ_SAMPLES ?= 8
+FUZZ_SEED ?= 1
+FUZZ_CALL_TIMEOUT ?= 5
+FUZZ_RUN_TIMEOUT ?= 600
+FUZZ_MEM_MB ?= 4096
+FUZZ_SANDBOX ?= bwrap
+FUZZ_UNSAFE ?= 0
+# The harness: the image's, or the typr checkout's.
+FUZZ_HARNESS ?= $(or $(TYPR_FUZZ_HARNESS),$(TYPR_DIR)/fuzz)
+
 export CHECKER_DIR CHECKER PRELUDE TS_LIB_DIR FUN_TIMEOUT CHECKER_OPTS PERF PERF_OPTS RUN_TIMEOUT MEM_LIMIT_MB
+export LIBRARY FUZZ FUZZ_SAMPLES FUZZ_SEED FUZZ_CALL_TIMEOUT FUZZ_RUN_TIMEOUT FUZZ_MEM_MB FUZZ_SANDBOX FUZZ_UNSAFE FUZZ_HARNESS
 
 .PHONY: all download extract install typecheck results snapshot webpage dashboard discover build-checker trends clean clean-results perf-report
 
@@ -93,6 +110,10 @@ work/.install_done: work/.download_done scripts/install_packages.R
 	touch $@
 
 install: work/.install_done
+
+ifeq ($(FUZZ),1)
+work/.typecheck_done: work/.install_done
+endif
 
 # --- Run type checker ---
 work/.typecheck_done: work/.extract_done $(CHECKER)

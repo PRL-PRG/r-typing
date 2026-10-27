@@ -82,6 +82,44 @@ TypR parses its flags with OCaml's `Arg`: an unknown flag fails the run with exi
 
 In CI, the previous successful run's `results-<n>` artifact is downloaded into `results.prev/` before the pipeline runs, so the published dashboard shows changes since that run.
 
+## Fuzzing
+
+With `FUZZ=1`, the strict runs also check the inferred types by running the packages' functions. For each typed function (R definition or `.Call` entry point), TypR draws calls inside its inferred domain and checks that each result has the type predicted for its arguments; it also draws calls just outside, and records which the function accepts. The verdicts are in the JSONL report (`fuzz_def` and `fuzz_sample` records); the samples, the harness's results and its log in `work/raw_output/strict/fuzz/<pkg>/`.
+
+The packages must be installed (`make install`, a prerequisite of `make typecheck` with `FUZZ=1`); those that do not load are not fuzzed. In the image, the dependencies are installed as binaries into the *system* library of the container, so installing and fuzzing must happen in the same container. The calls may have any side effect, so they run in a sandbox, `scripts/fuzz_sandbox.sh`:
+
+- `FUZZ_SANDBOX=bwrap` (default): bubblewrap, with the whole file system read-only but for the package's fuzz directory, a private `/tmp`, and no network. In a container, bwrap needs it started with privileges:
+
+  ```bash
+  docker run --rm --cap-add SYS_ADMIN --security-opt seccomp=unconfined \
+      --security-opt apparmor=unconfined -v $PWD:/rt -w /rt ghcr.io/prl-prg/typr \
+      make FUZZ=1
+  ```
+
+- `FUZZ_SANDBOX=none FUZZ_UNSAFE=1`: no sandbox; the container is the boundary. Install with network, then take the network away from the container before fuzzing:
+
+  ```bash
+  docker run -d --name rt-fuzz -v $PWD:/rt -w /rt ghcr.io/prl-prg/typr sleep infinity
+  docker exec rt-fuzz make install
+  docker network disconnect bridge rt-fuzz
+  docker exec rt-fuzz make FUZZ=1 FUZZ_SANDBOX=none FUZZ_UNSAFE=1
+  docker rm -f rt-fuzz
+  ```
+
+  A function can then write anywhere in the checkout, into `work/` (the sources, the library, the outputs of the other packages) and `results/`, and nothing would show it but the file system effects the harness records for each call: prefer bwrap.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `FUZZ` | `0` | `1` fuzzes the strict runs |
+| `FUZZ_SAMPLES` | `8` | Calls per function inside its domain (more for functions with more overloads, up to 4×), and as many outside |
+| `FUZZ_SEED` | `1` | Seed; the calls of a function only depend on it, the package and the function's name |
+| `FUZZ_CALL_TIMEOUT` | `5` | Seconds per call (R code only: the C code is bounded by `FUZZ_RUN_TIMEOUT`) |
+| `FUZZ_RUN_TIMEOUT` | `600` | Seconds per run of the harness; after it, the harness resumes after the call it was stuck on |
+| `FUZZ_MEM_MB` | `4096` | Address-space limit of R, in MB |
+| `FUZZ_SANDBOX` | `bwrap` | `bwrap` or `none` (see above) |
+| `FUZZ_UNSAFE` | `0` | Must be `1` for `FUZZ_SANDBOX=none` |
+| `FUZZ_HARNESS` | the image's, or `$(TYPR_DIR)/fuzz` | Directory of TypR's `harness.R` and `describe.R` |
+
 ## Profiling
 
 Run any package (or the full pipeline) under `perf record` to get a sampling profile of the checker. Each run gets its own `.perf.data` file alongside the `.jsonl` / `.out` / `.time` / `.exit` outputs, so you can inspect them independently.

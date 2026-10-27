@@ -7,6 +7,8 @@
 #   <pkg>.out   — stdout+stderr, kept for debugging
 #   <pkg>.time  — wall-clock seconds
 #   <pkg>.exit  — exit code
+#   fuzz/<pkg>/ — with FUZZ=1, strict mode only: the fuzzing's samples, the
+#                 harness's results and log (its verdicts are in the report)
 #
 # The mode is a directory rather than part of the file name because R package
 # names may contain dots (data.table, R.utils).
@@ -18,6 +20,9 @@ MODE="${3:-strict}"
 OUT_DIR="$(realpath -m "$2")/$MODE"
 
 PKG_NAME="$(basename "$PKG_DIR")"
+# Before the cd below: the paths the fuzzing gets must be absolute.
+SCRIPTS_DIR="$(dirname "$(realpath "$0")")"
+LIBRARY="$(realpath -m "${LIBRARY:-work/library}")"
 
 CHECKER_DIR="${CHECKER_DIR:-/checker}"
 CHECKER="${CHECKER:-$CHECKER_DIR/_build/default/bin/main.exe}"
@@ -44,6 +49,27 @@ fi
 # when running against a checkout that does not have one.
 if [ -n "${PRELUDE:-}" ] && [ -f "$PRELUDE" ]; then
     OPTS+=(--prelude "$PRELUDE")
+fi
+
+# Fuzzing (FUZZ=1): the strict run only (dyn has no values to draw), and only
+# packages that load: `make install` put them in LIBRARY, but their
+# dependencies may have gone to the system library of another container (cf.
+# the README). The harness loads the package through the sandbox of
+# fuzz_sandbox.sh.
+if [ "${FUZZ:-0}" = 1 ] && [ "$MODE" = strict ]; then
+    export R_LIBS="$LIBRARY${R_LIBS:+:$R_LIBS}"
+    if Rscript -e 'loadNamespace(commandArgs(TRUE)[1])' "$PKG_NAME" >/dev/null 2>&1; then
+        OPTS+=(--fuzz-runner "$SCRIPTS_DIR/fuzz_sandbox.sh"
+               --fuzz-dir "$OUT_DIR/fuzz/$PKG_NAME"
+               --fuzz-samples "${FUZZ_SAMPLES:-8}" --fuzz-seed "${FUZZ_SEED:-1}"
+               --fuzz-call-timeout "${FUZZ_CALL_TIMEOUT:-5}")
+        if [ -n "${FUZZ_HARNESS:-}" ]; then
+            OPTS+=(--fuzz-harness "$FUZZ_HARNESS")
+        fi
+        mkdir -p "$OUT_DIR/fuzz"
+    else
+        echo "$PKG_NAME: does not load (see $LIBRARY/install_status.csv), not fuzzed" >&2
+    fi
 fi
 
 # Optional: wrap with `perf record` when PERF=1. `--quiet` keeps perf's own

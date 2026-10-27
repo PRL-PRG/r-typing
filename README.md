@@ -292,6 +292,8 @@ The four commits the checker was built from — TypR, Rsem, NativeSem, rstt — 
 
 Produced by `make webpage`. The index page leads with the strict/gradual pair and **prelude debt** (definitions blocked only by a name missing from the prelude), then a native → R funnel, a per-package table, the missing prelude names ranked by definitions blocked, why entry points failed to bind, and error categories, `empty` returns and timings per side. Each detail page has one card per native function and per R definition, with its type or error, its source, and filters by side, mode, status, entry point, and name.
 
+With `FUZZ=1`, the index also has a *Fuzzing* column group and section: unsound definitions with a counterexample each, and the definitions accepting calls outside their inferred domain, by share of those calls (with a baseline, the unsound count shows its change). Each fuzzed definition's card gets a badge (`unsound`, `accepts outside`, `fuzz ok`, …) and the calls that matter: counterexamples, accepted calls by parameter, other failures, side effects. `#fuzz` on a package page shows the fuzzing findings only; `#fuzz=<name>` the card of one definition.
+
 The page renders NativeSem-era results too (no R side, no `links.csv`): every R section is skipped.
 
 ## File layout

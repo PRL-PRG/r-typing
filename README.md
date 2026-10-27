@@ -155,7 +155,7 @@ make typecheck PERF=1 PERF_OPTS='-e cache-misses -F 99'   # hardware event inste
 
 `make typecheck` writes `work/raw_output/<mode>/<pkg>.{jsonl,out,time,exit}`: TypR's report (one JSON record per line, `--report`), its stdout+stderr, the wall-clock time and the exit code. `make results` recomputes every number from the individual records of the reports, so a run that was killed still contributes what it reported before dying.
 
-The CSV schema only ever grows: columns that predate TypR keep their names and their meaning (native), so older results and CI artifacts still read correctly. `schema_version` is 2 for TypR results.
+The CSV schema only ever grows: columns that predate TypR keep their names and their meaning (native), so older results and CI artifacts still read correctly. `schema_version` is 2 for TypR results, 3 once the `fz_*` columns were added.
 
 ### `results/summary.csv`
 
@@ -164,7 +164,7 @@ One row per package (never one per mode).
 | Column | Description |
 |--------|-------------|
 | `package` | Package name |
-| `schema_version` | 2 (absent before TypR) |
+| `schema_version` | 2, or 3 with the `fz_*` columns (absent before TypR) |
 | `ep_call`, `ep_c`, `ep_fortran`, `ep_external` | Entry points per calling convention |
 | `n_ep` | Distinct entry-point symbols the R code reaches |
 | `n_ep_reached` | Entry points defined in `src/` |
@@ -190,8 +190,18 @@ One row per package (never one per mode).
 | `rg_*` | The same R columns for the gradual run |
 | `elapsed_sec`, `exit_code`, `crashed`, `truncated` | The strict run: wall-clock time, exit code, 1 if it did not exit 0, 1 if its report has no `summary` record |
 | `rg_elapsed_sec`, `rg_exit_code`, `rg_crashed`, `rg_truncated` | The same for the gradual run |
+| `fz_fuzzed` | 1 if the strict run was fuzzed (`FUZZ=1` and the package loads) |
+| `fz_n_defs`, `fz_n_ungeneratable` | Definitions fuzzed, and those with no call drawn inside their domain |
+| `fz_n_in`, `fz_n_out` | Calls inside the domain, and just outside it |
+| `fz_n_ok`, `fz_n_unknown`, `fz_n_error_pkg`, `fz_n_error_type` | Calls inside the domain by verdict (see `fuzz.csv`) |
+| `fz_n_unsound`, `fz_n_unsound_samples` | Definitions with at least one unsound call, and the unsound calls |
+| `fz_n_rejected` | Calls outside the domain that the function refused |
+| `fz_n_accepted`, `fz_n_accepted_samples` | Definitions accepting at least one call outside their domain, and those calls |
+| `fz_n_crash`, `fz_n_effects`, `fz_n_not_run` | Definitions with a call that crashed R; with side effects; calls never run |
 
 The native columns come from the strict run (the native side does not depend on the mode), or from the gradual run if the strict one left no report.
+
+The `fz_*` counts are empty when the package was not fuzzed, or when its run was killed before the fuzzing reported.
 
 ### `results/functions.csv`
 
@@ -241,6 +251,38 @@ One row per run that did not exit 0:
 | `exit_code` | Exit code (2 = uncaught exception or bad flag, 124/137 = killed) |
 | `error_message` | The exception from the report's `crash` record, else the last line of output |
 | `mode` | `strict` or `gradual` |
+
+### `results/fuzz.csv`
+
+With `FUZZ=1` only (absent otherwise). One row per fuzzed definition: a typed R definition or a linked entry point of the strict run.
+
+| Column | Description |
+|--------|-------------|
+| `package`, `def`, `kind` | Package, name, `r` or `native` |
+| `type` | The type the calls were drawn from |
+| `exported` | R definitions: exported by the package's namespace |
+| `n_arrows`, `n_arrows_covered` | Arrows of the type, and those at least one call was drawn from |
+| `ungeneratable`, `lb_ne_ub` | No call could be drawn inside the domain; the lower bound of the inferred gradual type differs from `type` |
+| `effects` | Side-effecting functions it called (`;`-separated) |
+| `n_in`, `n_out` | Calls inside the domain, and just outside it |
+| `in_ok`, `in_unsound`, `in_unknown`, `in_error_pkg`, `in_error_type`, `in_timeout`, `in_crash`, `in_invalid`, `in_not_run` | Calls inside the domain by verdict. `unsound`: the result is outside the predicted type; `unknown`: the type of the result over-approximates it; `error_pkg`: an error raised by the package itself (always for a native); `error_type`: one raised by another namespace or a primitive |
+| `out_rejected`, `out_accepted`, `out_not_forced`, `out_timeout`, `out_crash`, `out_invalid`, `out_not_run` | Calls outside the domain by verdict. `accepted`: the function returned; `not_forced`: the changed argument was never evaluated |
+
+### `results/fuzz_samples.csv`
+
+With `FUZZ=1` only. The calls behind `fuzz.csv`: every call with an unexpected verdict, but only the first `FUZZ_KEEP_OK` (2) `ok` and `rejected` calls per definition and direction, unless they had side effects.
+
+| Column | Description |
+|--------|-------------|
+| `package`, `def`, `kind`, `id` | The definition, and the call's number in the package's samples |
+| `dir`, `arrow` | `in` or `out` of the domain; the arrow it was drawn from |
+| `verdict` | As in `fuzz.csv` |
+| `args` | The arguments, as R source |
+| `param`, `op` | Outside the domain: the parameter changed, and how |
+| `expected`, `result` | The predicted type of the result, and the type of the value returned |
+| `error_class`, `error_message`, `error_fun`, `error_ns` | The error, and the function and namespace that raised it |
+| `forced`, `effects`, `warnings` | Whether each argument was evaluated; side effects; warnings (`;`-separated) |
+| `elapsed_sec` | Time of the call |
 
 ### `results/provenance.json`
 

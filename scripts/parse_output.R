@@ -14,6 +14,13 @@
 #                     could be bound on the R side.
 #   entry_points.csv  one row per entry point symbol the R code reaches.
 #   crashes.csv       one row per (package, mode) whose run did not exit 0.
+#   fuzz.csv          with FUZZ=1: one row per fuzzed definition, with its
+#                     sample counts per direction (in_* inside the domain,
+#                     out_* outside) and verdict.
+#   fuzz_samples.csv  with FUZZ=1: the fuzzing's samples. Of the expected
+#                     ones (`ok` inside, `rejected` outside), only the first
+#                     FUZZ_KEEP_OK per definition and direction are kept,
+#                     and those with side effects.
 #
 # Every count is recomputed from the individual records: a run that was killed
 # has no `summary` record, and its partial report is still worth reading. The
@@ -28,8 +35,14 @@ args <- commandArgs(trailingOnly = TRUE)
 raw_dir <- if (length(args) >= 1) args[1] else "work/raw_output"
 results_dir <- if (length(args) >= 2) args[2] else "results"
 
-SCHEMA_VERSION <- 2L
+SCHEMA_VERSION <- 3L
 MODES <- c("strict", "gradual")
+
+# Verdicts of the fuzzing, per direction (see typr's lib/fuzz.ml).
+FUZZ_IN  <- c("ok", "unsound", "unknown", "error_pkg", "error_type",
+              "timeout", "crash", "invalid", "not_run")
+FUZZ_OUT <- c("rejected", "accepted", "not_forced", "timeout", "crash", "invalid", "not_run")
+FUZZ_KEEP_OK <- as.integer(Sys.getenv("FUZZ_KEEP_OK", "2"))
 
 dir.create(results_dir, recursive = TRUE, showWarnings = FALSE)
 
@@ -246,6 +259,97 @@ r_rows <- function(pkg, rep, root, mode) {
     stringsAsFactors = FALSE)
 }
 
+# ===== Fuzzing =====
+#
+# TypR writes the fuzzing's records once the harness is done, so a run killed
+# while fuzzing has none. The fuzz directory of run_one_package.sh tells a
+# fuzzed package from one that was not.
+
+fuzz_dir <- function(pkg) file.path(raw_dir, "strict", "fuzz", pkg)
+
+fuzz_key <- function(df) paste(fld(df, "kind"), fld(df, "def"), sep = "\r")
+
+# One row per fuzzed definition. The counts are recomputed from the samples
+# per direction: those of `fuzz_def` add up both directions for the verdicts
+# they share (timeout, crash, invalid, not_run).
+fuzz_rows <- function(pkg, rep) {
+  fs <- rep$fuzz_sample
+  fd <- rep$fuzz_def
+  if (nrec(fs) == 0L && nrec(fd) == 0L) return(NULL)
+  keys <- unique(c(fuzz_key(fd), fuzz_key(fs)))
+  d <- match(keys, fuzz_key(fd))
+  s_key <- fuzz_key(fs)
+  # A definition with samples but no `fuzz_def` record still gets its name.
+  first <- match(keys, s_key)
+  pick <- function(name, default = NA) {
+    v <- fld(fd, name, default)[d]
+    if (name %in% c("def", "kind")) ifelse(is.na(v), fld(fs, name)[first], v) else v
+  }
+  count <- function(dir, verdict) vapply(keys, function(k)
+    sum(s_key == k & fld(fs, "dir") == dir & fld(fs, "verdict") == verdict), integer(1),
+    USE.NAMES = FALSE)
+  in_counts  <- setNames(lapply(FUZZ_IN,  function(v) count("in", v)),  paste0("in_", FUZZ_IN))
+  out_counts <- setNames(lapply(FUZZ_OUT, function(v) count("out", v)), paste0("out_", FUZZ_OUT))
+  data.frame(
+    c(list(package = pkg, def = pick("def"), kind = pick("kind"), type = pick("type"),
+           exported = pick("exported"), n_arrows = pick("n_arrows"),
+           n_arrows_covered = pick("n_arrows_covered"), ungeneratable = pick("ungeneratable"),
+           lb_ne_ub = pick("lb_ne_ub"), effects = pick("effects"),
+           n_in = vapply(keys, function(k) sum(s_key == k & fld(fs, "dir") == "in"), integer(1),
+                         USE.NAMES = FALSE),
+           n_out = vapply(keys, function(k) sum(s_key == k & fld(fs, "dir") == "out"), integer(1),
+                          USE.NAMES = FALSE)),
+      in_counts, out_counts),
+    stringsAsFactors = FALSE)
+}
+
+FUZZ_SAMPLE_COLS <- c("package", "def", "kind", "id", "dir", "arrow", "verdict", "args",
+  "param", "op", "expected", "result", "error_class", "error_message", "error_fun",
+  "error_ns", "forced", "effects", "warnings", "elapsed_sec")
+
+# The samples worth showing: every unexpected one, and a few expected ones
+# per definition and direction. One with effects is never dropped.
+fuzz_sample_rows <- function(pkg, rep) {
+  fs <- rep$fuzz_sample
+  if (nrec(fs) == 0L) return(NULL)
+  fs <- fs[order(fld(fs, "id")), , drop = FALSE]
+  expected <- fld(fs, "verdict") %in% c("ok", "rejected")
+  quiet <- expected & !(nzchar(fld(fs, "effects", "")) %in% TRUE)
+  rank <- ave(seq_len(nrec(fs)), fuzz_key(fs), fld(fs, "dir"), quiet, FUN = seq_along)
+  keep <- !quiet | rank <= FUZZ_KEEP_OK
+  fs <- fs[keep, , drop = FALSE]
+  as.data.frame(c(list(package = rep(pkg, nrec(fs))),
+                  setNames(lapply(FUZZ_SAMPLE_COLS[-1], function(c) fld(fs, c)), FUZZ_SAMPLE_COLS[-1])),
+                stringsAsFactors = FALSE)
+}
+
+# The fz_* columns of summary.csv: NA for a package that was not fuzzed, or
+# whose run was killed before its fuzzing reported.
+fuzz_summary <- function(pkg, rep, rows) {
+  fuzzed <- dir.exists(fuzz_dir(pkg))
+  s <- list(
+    n_defs          = nrec(rows),
+    n_ungeneratable = sum(fld(rows, "n_in", 0L) == 0L),
+    n_in            = sum(fld(rows, "n_in", 0L)),
+    n_out           = sum(fld(rows, "n_out", 0L)),
+    n_ok            = sum(fld(rows, "in_ok", 0L)),
+    n_unsound       = sum(fld(rows, "in_unsound", 0L) > 0L),
+    n_unsound_samples = sum(fld(rows, "in_unsound", 0L)),
+    n_unknown       = sum(fld(rows, "in_unknown", 0L)),
+    n_error_pkg     = sum(fld(rows, "in_error_pkg", 0L)),
+    n_error_type    = sum(fld(rows, "in_error_type", 0L)),
+    n_rejected      = sum(fld(rows, "out_rejected", 0L)),
+    n_accepted      = sum(fld(rows, "out_accepted", 0L) > 0L),
+    n_accepted_samples = sum(fld(rows, "out_accepted", 0L)),
+    n_crash         = sum(fld(rows, "in_crash", 0L) + fld(rows, "out_crash", 0L) > 0L),
+    n_effects       = sum(nzchar(fld(rows, "effects", "")) %in% TRUE),
+    n_not_run       = sum(fld(rows, "in_not_run", 0L) + fld(rows, "out_not_run", 0L))
+  )
+  reported <- !is.null(rep$summary) || nrec(rows) > 0L
+  if (!fuzzed || !reported) s <- na_like(s)
+  setNames(c(list(fuzzed = as.integer(fuzzed)), s), paste0("fz_", c("fuzzed", names(s))))
+}
+
 process_package <- function(pkg) {
   runs <- lapply(setNames(MODES, MODES), function(mode) list(
     rep     = read_report(raw_path(mode, pkg, "jsonl")),
@@ -267,6 +371,9 @@ process_package <- function(pkg) {
   native <- native_summary(nrep)
   if (is.null(nrep)) native <- na_like(native)
 
+  # Only the strict run is fuzzed.
+  fuzz <- fuzz_rows(pkg, runs$strict$rep)
+
   summary_row <- as.data.frame(c(
     list(package = pkg, schema_version = SCHEMA_VERSION),
     native,
@@ -277,7 +384,8 @@ process_package <- function(pkg) {
     if (have["strict"]) run_info(runs$strict$rep, runs$strict$exit, runs$strict$elapsed, "")
     else na_like(run_info(NULL, NA, NA, "")),
     if (have["gradual"]) run_info(runs$gradual$rep, runs$gradual$exit, runs$gradual$elapsed, "rg_")
-    else na_like(run_info(NULL, NA, NA, "rg_"))
+    else na_like(run_info(NULL, NA, NA, "rg_")),
+    fuzz_summary(pkg, runs$strict$rep, fuzz)
   ), stringsAsFactors = FALSE)
 
   funcs <- rbind(
@@ -311,7 +419,8 @@ process_package <- function(pkg) {
   }))
 
   list(summary = summary_row, functions = funcs, links = links,
-       entry_points = entry_points, crash = crashes)
+       entry_points = entry_points, crash = crashes, fuzz = fuzz,
+       fuzz_samples = fuzz_sample_rows(pkg, runs$strict$rep))
 }
 
 # Process all packages in parallel. mc.preschedule=FALSE so uneven workloads
@@ -366,6 +475,27 @@ write_table(collect("crash"),
   data.frame(package = character(), exit_code = integer(), error_message = character(),
              mode = character()),
   "crashes.csv", "crashed runs")
+
+# The fuzzing's tables exist only when something was fuzzed: their absence is
+# how the dashboard knows a run did not fuzz.
+fuzz_files <- file.path(results_dir, c("fuzz.csv", "fuzz_samples.csv"))
+if (any(dir.exists(fuzz_dir(packages)))) {
+  fuzz_df <- collect("fuzz")
+  write_table(fuzz_df,
+    as.data.frame(c(
+      list(package = character(), def = character(), kind = character(), type = character(),
+           exported = logical(), n_arrows = integer(), n_arrows_covered = integer(),
+           ungeneratable = logical(), lb_ne_ub = logical(), effects = character(),
+           n_in = integer(), n_out = integer()),
+      setNames(rep(list(integer()), length(FUZZ_IN) + length(FUZZ_OUT)),
+               c(paste0("in_", FUZZ_IN), paste0("out_", FUZZ_OUT))))),
+    "fuzz.csv", "fuzzed definitions")
+  write_table(collect("fuzz_samples"),
+    as.data.frame(setNames(rep(list(character()), length(FUZZ_SAMPLE_COLS)), FUZZ_SAMPLE_COLS)),
+    "fuzz_samples.csv", "fuzzing samples")
+} else {
+  unlink(fuzz_files)
+}
 
 # Carry the checker-version snapshot from work/ into results/ so it survives
 # results.prev/ promotion and CI artifact upload.

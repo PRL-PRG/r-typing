@@ -12,14 +12,14 @@ on:
       fuzz:
         description: "Also fuzz the inferred types (FUZZ=1): installs the packages, then calls their functions in a sandbox"
         type: boolean
-        default: false
+        default: true
       sandbox:
         description: "Sandbox of the fuzzed calls: bwrap, or none (the runner, a throwaway VM, is then the only boundary)"
         type: choice
         options: [bwrap, none]
         default: bwrap
       image:
-        description: "TypR image to run (default ghcr.io/prl-prg/typr:latest; :fuzz is built from typr's fuzz branch)"
+        description: "TypR image to run (default ghcr.io/prl-prg/typr:latest)"
         type: string
         default: ""
 
@@ -40,18 +40,19 @@ jobs:
     # libtree-sitter.so and provenance.json, with CHECKER_DIR / CHECKER /
     # TS_LIB_DIR already set, plus ctags and jsonlite for the dashboard.
     # `container:` does not lowercase the reference: keep it lowercase here.
-    # Fuzzing with bwrap needs a container allowed to create namespaces and
-    # mount (scripts/fuzz_sandbox.sh); systempaths=unconfined lets it mount a
-    # fresh /proc.
+    # Every run fuzzes, but a manual one with `fuzz` off (pushes and TypR's
+    # dispatches have no inputs). Fuzzing with bwrap needs a container allowed
+    # to create namespaces and mount (scripts/fuzz_sandbox.sh);
+    # systempaths=unconfined lets it mount a fresh /proc.
     container:
       image: ${{ inputs.image || 'ghcr.io/prl-prg/typr:latest' }}
-      options: ${{ inputs.fuzz && inputs.sandbox != 'none' && '--cap-add SYS_ADMIN --security-opt seccomp=unconfined --security-opt apparmor=unconfined --security-opt systempaths=unconfined' || '' }}
+      options: ${{ (github.event_name != 'workflow_dispatch' || inputs.fuzz) && inputs.sandbox != 'none' && '--cap-add SYS_ADMIN --security-opt seccomp=unconfined --security-opt apparmor=unconfined --security-opt systempaths=unconfined' || '' }}
     # The image sets no locale, so R runs in the POSIX one and write.csv
     # escapes every non-ASCII character of the UTF-8 strings jsonlite reads
     # (the ∀ of polymorphic types became <U+2200> in the dashboard).
     env:
       LC_ALL: C.UTF-8
-      FUZZ: ${{ inputs.fuzz && '1' || '0' }}
+      FUZZ: ${{ (github.event_name != 'workflow_dispatch' || inputs.fuzz) && '1' || '0' }}
       FUZZ_SANDBOX: ${{ inputs.sandbox || 'bwrap' }}
       # Without a sandbox, the runner is the boundary: a VM thrown away
       # after the job, whose results are only what it uploads.

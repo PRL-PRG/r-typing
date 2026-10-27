@@ -120,17 +120,17 @@ The packages must be installed (`make install`, a prerequisite of `make typechec
 | `FUZZ_UNSAFE` | `0` | Must be `1` for `FUZZ_SANDBOX=none` |
 | `FUZZ_HARNESS` | the image's, or `$(TYPR_DIR)/fuzz` | Directory of TypR's `harness.R` and `describe.R` |
 
-In CI, fuzzing is off: pushes and TypR's dispatches never fuzz. A manual run of the *Pipeline* workflow can turn it on, with three inputs:
+In CI, fuzzing is on: every run of the *Pipeline* workflow fuzzes, whether started by a push, by TypR's dispatch or by hand (it adds about 4 minutes to a pipeline of about 30: the install, and the longest package's calls). A manual run can turn it off, with three inputs:
 
-- `fuzz`: installs the packages and runs with `FUZZ=1`. With bwrap, the job's container gets the privileges above (plus `--security-opt systempaths=unconfined`, for a fresh `/proc`), and a first step checks that bwrap works before the install.
+- `fuzz` (on by default): installs the packages and runs with `FUZZ=1`. With bwrap, the job's container gets the privileges above (plus `--security-opt systempaths=unconfined`, for a fresh `/proc`), and a first step checks that bwrap works before the install.
 - `sandbox`: `bwrap` (default) or `none`. With `none`, the runner is the boundary: a VM thrown away after the job, which keeps only the artifacts it uploads.
-- `image`: the TypR image, `ghcr.io/prl-prg/typr:latest` by default. TypR's `fuzz` branch builds `ghcr.io/prl-prg/typr:fuzz`.
+- `image`: the TypR image, `ghcr.io/prl-prg/typr:latest` by default. A push to a TypR branch named `fuzz` builds `ghcr.io/prl-prg/typr:fuzz`, to try a TypR change on the dashboard before merging it.
 
 ```bash
-gh workflow run ci.yml --ref main -f fuzz=true -f image=ghcr.io/prl-prg/typr:fuzz
+gh workflow run ci.yml --ref main -f fuzz=false   # a run without fuzzing
 ```
 
-Besides `results-<n>`, such a run uploads `fuzz-<n>`: the fuzz directories and `install_status.csv`. A run on `main` publishes the dashboard with its fuzzing section; the next run without fuzzing publishes it without.
+Besides `results-<n>`, a fuzzing run uploads `fuzz-<n>`: the fuzz directories and `install_status.csv`. Locally, fuzzing stays off unless `FUZZ=1`: it needs the packages installed and, for bwrap, a privileged container.
 
 ## Profiling
 

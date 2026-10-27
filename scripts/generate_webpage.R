@@ -44,6 +44,9 @@ read_opt_csv <- function(dir, name) {
 }
 links_df        <- read_opt_csv(results_dir, "links.csv")
 entry_points_df <- read_opt_csv(results_dir, "entry_points.csv")
+# Written only by a run with FUZZ=1.
+fuzz_df         <- read_opt_csv(results_dir, "fuzz.csv")
+fuzz_samples_df <- read_opt_csv(results_dir, "fuzz_samples.csv")
 
 # --- Column aliases ---
 # The CSV schema grows additively. NativeSem-era runs carry only the native
@@ -122,6 +125,26 @@ rs    <- r_cols(summary_df)
 b_nat <- if (!is.null(b_summary_df)) native_cols(b_summary_df) else NULL
 HAVE_NATIVE <- any(nat$n > 0, na.rm = TRUE)
 HAVE_R      <- any(!is.na(rs$n))
+
+# Fuzzing of the strict run (fz_*). The counts are NA for a package that was
+# not fuzzed, or whose run was killed before the fuzzing reported.
+fuzz_cols <- function(df) {
+  g <- function(name) getcol(df, paste0("fz_", name), NA_integer_)
+  list(fuzzed = getcol(df, "fz_fuzzed", 0L) %in% 1,
+       defs = g("n_defs"), ungeneratable = g("n_ungeneratable"), n_in = g("n_in"), n_out = g("n_out"),
+       ok = g("n_ok"), unknown = g("n_unknown"), error_pkg = g("n_error_pkg"),
+       error_type = g("n_error_type"), unsound = g("n_unsound"),
+       unsound_samples = g("n_unsound_samples"), rejected = g("n_rejected"),
+       accepted = g("n_accepted"), accepted_samples = g("n_accepted_samples"),
+       crash = g("n_crash"), effects = g("n_effects"), not_run = g("n_not_run"))
+}
+fz   <- fuzz_cols(summary_df)
+b_fz <- if (!is.null(b_summary_df)) fuzz_cols(b_summary_df) else NULL
+HAVE_FUZZ <- !is.null(fuzz_df) && any(fz$fuzzed)
+if (HAVE_FUZZ && is.null(fuzz_samples_df))
+  fuzz_samples_df <- as.data.frame(setNames(rep(list(character()), 12L),
+    c("package", "def", "kind", "id", "dir", "verdict", "args", "param", "op", "expected",
+      "result", "error_message")))
 
 # Baseline matching key: package, side, file, name, occurrence, mode.
 # `occurrence` numbers repeated rows in order within a mode (R files hold many
@@ -876,6 +899,20 @@ common_style <- function() {
     '.delta-gap { font-family: "JetBrains Mono", monospace; font-weight: 600; padding: .1em .4em; border-radius: 4px; font-size: .85rem; background: #ede9fe; color: #5b21b6; }',
     'td .delta { display: inline-block; margin-top: .2rem; }',
     'h3.sub { font-size: 1rem; margin: 1.25rem 0 .5rem; }',
+    if (HAVE_FUZZ) paste0(
+      '.badge-unsound { background: var(--bad-bg); color: var(--bad); }',
+      '.badge-accepts { background: #ede9fe; color: #5b21b6; }',
+      '.badge-fuzz-ok { background: var(--good-bg); color: var(--good); }',
+      '.badge-fuzz-none { background: #f0f0f0; color: var(--muted); }',
+      '.fz-table td, .fz-table th { font-size: .8rem; padding: .35rem .6rem; }',
+      '.fz-table td.code, .fz-table td.name { font-family: "JetBrains Mono", monospace; word-break: break-word; }',
+      '.fz-table td.ty { font-family: "JetBrains Mono", monospace; font-size: .75rem; color: var(--muted); word-break: break-word; max-width: 28rem; }',
+      '.fz-table td.name a { color: var(--accent); text-decoration: none; }',
+      'details.fuzz { border-top: 1px dashed var(--border); padding-top: .4rem; }',
+      'details.fuzz h4 { font-size: .8rem; margin: .6rem 0 .3rem; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; }',
+      'details.fuzz .fz-table { margin-bottom: .4rem; }',
+      '.fz-more { font-size: .8rem; color: var(--muted); }',
+      'td.num { white-space: nowrap; }') else '',
     '.leaders td.name { font-family: "JetBrains Mono", monospace; }',
     '.leaders td.pkgs a { color: var(--accent); text-decoration: none; margin-right: .4rem; }',
     '.file-head { font-family: "JetBrains Mono", monospace; font-size: .9rem; font-weight: 600; color: var(--muted); margin: 1.25rem 0 .5rem; }',
@@ -989,6 +1026,110 @@ run_status_html <- function(i) {
   if (any(trunc)) return(sprintf('<span class="badge badge-timeout" title="no summary record: the report is incomplete">truncated (%s)</span>',
                                  paste(names(trunc)[trunc], collapse = ", ")))
   '<span class="badge badge-ok">OK</span>'
+}
+
+# --- Fuzzing helpers ---
+# Verdicts per direction, in the order they are shown (see parse_output.R).
+FUZZ_IN  <- c("ok", "unsound", "unknown", "error_pkg", "error_type",
+              "timeout", "crash", "invalid", "not_run")
+FUZZ_OUT <- c("rejected", "accepted", "not_forced", "timeout", "crash", "invalid", "not_run")
+
+# The card a fuzzed definition belongs to on its package page: an R
+# definition's own, and for an entry point (fuzzed under its R name) the card
+# of the C function it is bound to.
+if (HAVE_FUZZ) {
+  link_sym <- if (is.null(links_df)) rep(NA_character_, nrow(fuzz_df)) else
+    links_df$symbol[match(paste(fuzz_df$package, fuzz_df$def, sep = SEP),
+                          paste(links_df$package, links_df$r_name, sep = SEP))]
+  fuzz_df$card <- ifelse(fuzz_df$kind == "native" & !is.na(link_sym), link_sym, fuzz_df$def)
+  fuzz_df$effects <- ifelse(is.na(fuzz_df$effects), "", fuzz_df$effects)
+}
+
+fuzz_link <- function(pkg, card, text, prefix = "")
+  sprintf('<a href="%spkg/%s.html#fuzz=%s">%s</a>', prefix, esc(pkg),
+          esc(utils::URLencode(card, reserved = TRUE)), text)
+
+# A sample's call as R source: the harness's argument list, under the
+# definition's name.
+fuzz_call <- function(def, args) sprintf("%s(%s)", def, sub("^list\\((.*)\\)$", "\\1", args))
+
+# "6 ok, 2 unsound" over the verdicts of one direction with a non-zero count.
+fuzz_counts_str <- function(fr, dir, verdicts) {
+  n <- vapply(verdicts, function(v) sum(getcol(fr, paste0(dir, "_", v), 0L), na.rm = TRUE), numeric(1))
+  if (all(n == 0)) return("none")
+  paste(sprintf("%d %s", as.integer(n[n > 0]), gsub("_", " ", verdicts[n > 0])), collapse = ", ")
+}
+
+# The worst finding among the fuzz rows of one card.
+fuzz_state <- function(fr) {
+  s <- function(col) sum(fr[[col]], na.rm = TRUE)
+  if (s("in_unsound") > 0) "unsound"
+  else if (s("out_accepted") > 0) "accepts"
+  else if (s("in_crash") + s("out_crash") > 0) "crash"
+  else if (s("n_in") == 0) "untested"
+  else "ok"
+}
+
+fuzz_badge <- function(fr) {
+  s <- function(col) as.integer(sum(fr[[col]], na.rm = TRUE))
+  switch(fuzz_state(fr),
+    unsound  = sprintf(' <span class="badge badge-unsound" title="%d of %d calls inside its inferred domain returned a value outside the predicted type">unsound</span>',
+                       s("in_unsound"), s("n_in")),
+    accepts  = sprintf(' <span class="badge badge-accepts" title="returned on %d of %d calls just outside its inferred domain: the domain could be larger">accepts outside</span>',
+                       s("out_accepted"), s("n_out")),
+    crash    = ' <span class="badge badge-crash" title="a call crashed R">fuzz crash</span>',
+    untested = ' <span class="badge badge-fuzz-none" title="no call could be drawn inside its inferred domain">no call in domain</span>',
+    ok       = sprintf(' <span class="badge badge-fuzz-ok" title="%d calls inside its domain, none unsound; %d outside, none accepted">fuzz ok</span>',
+                       s("n_in"), s("n_out")))
+}
+
+fuzz_table <- function(head, rows) if (length(rows) == 0L) "" else
+  sprintf('<table class="fz-table"><thead><tr>%s</tr></thead><tbody>%s</tbody></table>',
+          paste(sprintf("<th>%s</th>", head), collapse = ""), paste(rows, collapse = ""))
+
+# The fuzzing of one definition, on its card: verdicts, then the calls that
+# matter. `fr` is its fuzz.csv row, `s` its rows of fuzz_samples.csv.
+fuzz_details <- function(fr, s, show_name = FALSE, show_type = TRUE, max_rows = 6L) {
+  more <- function(n) if (n > max_rows) sprintf('<div class="fz-more">and %d more</div>', n - max_rows) else ""
+  call <- function(x) sprintf('<td class="code">%s</td>', esc(fuzz_call(fr$def, x$args)))
+  ty <- function(t) sprintf('<td class="ty">%s</td>', if (is.na(t)) "&mdash;" else esc(t))
+  rows_of <- function(x, f) vapply(seq_len(min(nrow(x), max_rows)), function(i) f(x[i, ]), character(1))
+  unsound <- s[s$dir == "in" & s$verdict == "unsound", , drop = FALSE]
+  failed  <- s[s$dir == "in" & !(s$verdict %in% c("ok", "unsound")), , drop = FALSE]
+  accepted <- s[s$dir == "out" & s$verdict == "accepted", , drop = FALSE]
+  accepted <- accepted[order(accepted$param, accepted$op), , drop = FALSE]
+  err <- function(x) {
+    m <- x$error_message
+    where <- paste(c(if (!is.na(getcol(x, "error_ns")[1])) x$error_ns, if (!is.na(getcol(x, "error_fun")[1])) x$error_fun), collapse = "::")
+    sprintf('<td>%s</td>', esc(paste0(if (nzchar(where)) paste0(where, ": ") else "", if (is.na(m)) "" else m)))
+  }
+  body <- c(
+    if (show_type) sprintf('<div class="unbound-line">type drawn from: <code>%s</code></div>', esc(fr$type)),
+    if (nrow(unsound) > 0) c('<h4>Counterexamples</h4>',
+      fuzz_table(c("call", "predicted", "returned"),
+        rows_of(unsound, function(x) sprintf('<tr>%s%s%s</tr>', call(x), ty(x$expected), ty(x$result)))),
+      more(nrow(unsound))),
+    if (nrow(accepted) > 0) {
+      by_param <- table(ifelse(is.na(accepted$param), "(argument list)", accepted$param))
+      c(sprintf('<h4>Accepted outside the domain <small>%s</small></h4>',
+          esc(paste(sprintf("%s: %d", names(by_param), as.integer(by_param)), collapse = ", "))),
+        fuzz_table(c("parameter", "change", "call", "returned"),
+          rows_of(accepted, function(x) sprintf('<tr><td class="code">%s</td><td class="code">%s</td>%s%s</tr>',
+            esc(if (is.na(x$param)) "" else x$param), esc(x$op), call(x), ty(x$result)))),
+        more(nrow(accepted)))
+    },
+    if (nrow(failed) > 0) c('<h4>Other calls inside the domain</h4>',
+      fuzz_table(c("call", "verdict", "error"),
+        rows_of(failed, function(x) sprintf('<tr>%s<td>%s</td>%s</tr>', call(x), esc(x$verdict), err(x)))),
+      more(nrow(failed))),
+    if (nzchar(fr$effects)) sprintf('<h4>Side effects</h4><div class="unbound-line">%s</div>',
+      esc(gsub(";", ", ", fr$effects, fixed = TRUE))))
+  sprintf('<details class="fuzz"%s><summary>fuzzing%s: %d inside (%s) &middot; %d outside (%s)</summary>%s</details>',
+    if (fuzz_state(fr) == "unsound") " open" else "",
+    if (show_name) sprintf(' as <code>%s</code>', esc(fr$def)) else "",
+    as.integer(fr$n_in), fuzz_counts_str(fr, "in", FUZZ_IN),
+    as.integer(fr$n_out), fuzz_counts_str(fr, "out", FUZZ_OUT),
+    paste(body, collapse = ""))
 }
 
 # The R definitions of the strict run, the side every R-specific section
@@ -1131,11 +1272,31 @@ if (HAVE_R) {
     '<th class="grp-start">Defs</th>', '<th>Strict</th>', '<th>Gradual</th>',
     '<th title="typed in gradual mode but not in strict mode">Gap</th>',
     '<th title="strict failures on a name missing from the prelude">Prelude debt</th>',
+    if (HAVE_FUZZ) c('<th class="grp-start" title="typed definitions and entry points called">Defs</th>',
+      '<th title="definitions with a call inside their inferred domain returning outside the predicted type">Unsound</th>',
+      '<th title="definitions returning on a call just outside their inferred domain">Accept outside</th>'),
     '<th class="grp-start">Time</th>', '<th>Status</th>')
-  h('<table><colgroup><col></colgroup><colgroup span="2"></colgroup><colgroup span="2"></colgroup><colgroup span="5"></colgroup><colgroup span="2"></colgroup>',
+  h('<table><colgroup><col></colgroup><colgroup span="2"></colgroup><colgroup span="2"></colgroup><colgroup span="5"></colgroup>',
+    if (HAVE_FUZZ) '<colgroup span="3"></colgroup>', '<colgroup span="2"></colgroup>',
     '<thead><tr><th></th><th colspan="2" class="grp">Native</th><th colspan="2" class="grp">Linkage</th>',
-    '<th colspan="5" class="grp">R definitions</th><th colspan="2" class="grp">Run</th></tr>',
+    '<th colspan="5" class="grp">R definitions</th>', if (HAVE_FUZZ) '<th colspan="3" class="grp">Fuzzing</th>',
+    '<th colspan="2" class="grp">Run</th></tr>',
     '<tr>', paste(pkg_table_th, collapse = ""), '</tr></thead><tbody>')
+  b_unsound_by_pkg <- if (!is.null(b_fz) && any(!is.na(b_fz$unsound)))
+    setNames(b_fz$unsound, b_summary_df$package) else NULL
+  fuzz_cells <- function(i, pkg) {
+    if (!HAVE_FUZZ) return("")
+    if (!fz$fuzzed[i]) return('<td class="grp-start" colspan="3"><span class="na">not fuzzed</span></td>')
+    if (is.na(fz$defs[i])) return('<td class="grp-start" colspan="3"><span class="na">no report (run killed)</span></td>')
+    # A baseline that did not fuzz the package gives no change.
+    d <- if (is.null(b_unsound_by_pkg) || is.na(b_unsound_by_pkg[pkg])) "" else
+      paste0(" ", delta_html(as.integer(fz$unsound[i] - b_unsound_by_pkg[[pkg]]), -1))
+    sprintf('<td class="num grp-start">%d</td><td class="num">%s%s</td><td class="num">%s</td>',
+      as.integer(fz$defs[i]),
+      if (fz$unsound[i] > 0) sprintf('<a href="pkg/%s.html#fuzz" class="delta delta-bad">%d</a>', esc(pkg), as.integer(fz$unsound[i]))
+      else "0", d,
+      if (fz$accepted[i] > 0) sprintf('<a href="pkg/%s.html#fuzz">%d</a>', esc(pkg), as.integer(fz$accepted[i])) else "0")
+  }
   for (i in seq_len(nrow(summary_df))) {
     pkg <- summary_df$package[i]
     pkg_link <- sprintf('<a href="pkg/%s.html">%s</a>', esc(pkg), esc(pkg))
@@ -1149,7 +1310,7 @@ if (HAVE_R) {
         pct_bar(nat$ep_linked[i], nat$ep[i], "no entry point"))
     gap <- rs$g_typed[i] - rs$typed[i]
     debt <- rs$unbound_prelude[i]
-    h(sprintf('<tr><td class="pkg">%s</td>%s<td class="num grp-start">%s</td><td>%s%s%s</td><td>%s</td><td class="num">%s</td><td class="num">%s</td><td class="num grp-start">%s</td><td>%s</td></tr>',
+    h(sprintf('<tr><td class="pkg">%s</td>%s<td class="num grp-start">%s</td><td>%s%s%s</td><td>%s</td><td class="num">%s</td><td class="num">%s</td>%s<td class="num grp-start">%s</td><td>%s</td></tr>',
       pkg_link, native_cells,
       if (is.na(rs$n[i])) "&mdash;" else as.character(rs$n[i]),
       pct_bar(rs$typed[i], rs$n[i], "no R definitions"), chip(rs$timeout[i], "timed out"),
@@ -1158,6 +1319,7 @@ if (HAVE_R) {
       if (is.na(gap)) "&mdash;" else sprintf('<span class="delta-gap">+%d</span>', as.integer(gap)),
       if (is.na(debt) || debt == 0) as.character(if (is.na(debt)) "&mdash;" else 0L) else
         sprintf('<a href="pkg/%s.html#unbound">%d</a>', esc(pkg), as.integer(debt)),
+      fuzz_cells(i, pkg),
       fmt_time(summary_df$elapsed_sec[i]),
       run_status_html(i)))
   }
@@ -1207,6 +1369,97 @@ if (!is.null(b_summary_df)) {
   }
 }
 h('</tbody></table>')
+}
+
+# Fuzzing: the inferred types checked by running the functions.
+if (HAVE_FUZZ) {
+  fuzzed <- fz$fuzzed & !is.na(fz$defs)
+  ft <- function(x) tot(x[fuzzed])
+  n_fz_r <- sum(fuzz_df$kind == "r"); n_fz_native <- sum(fuzz_df$kind == "native")
+  h('<h2 id="fuzzing">Fuzzing the inferred types <small>strict run, with <code>FUZZ=1</code></small></h2>')
+  h('<p class="phase-legend">Each typed R definition and each entry point bound in R is called on arguments drawn from its inferred type, in a sandbox. ',
+    '<strong>Inside</strong> its domain, the value returned must have the type the inferred type predicts for those arguments; one that does not is a counterexample and makes the definition <strong>unsound</strong>. ',
+    'An error is not a counterexample: it counts as <code>error pkg</code> when the package raised it (its own <code>stop()</code>, <code>match.arg</code>, <code>stopifnot</code>, or native code, where R cannot tell more) and as <code>error type</code> when another namespace or a primitive did. ',
+    '<strong>Outside</strong>, each call changes one argument of an in-domain call so that it leaves the domain. A function that still returns <strong>accepts</strong> it: the domain could be larger. Not a bug, but a measure of precision.</p>')
+  h('<div class="stats">')
+  h(stat_card(ft(fz$defs), "Definitions fuzzed",
+    sprintf("%d R definitions &middot; %d entry points%s", n_fz_r, n_fz_native,
+            if (ft(fz$ungeneratable) > 0) sprintf(" &middot; %d with no call in their domain", ft(fz$ungeneratable)) else "")))
+  h(stat_card(pct_str(ft(fz$ok), ft(fz$n_in)), "Calls inside the domain returning in type",
+    sprintf("%d / %d &middot; %d errors from the package, %d from elsewhere", ft(fz$ok), ft(fz$n_in),
+            ft(fz$error_pkg), ft(fz$error_type))))
+  h(stat_card(ft(fz$unsound), "Unsound definitions",
+    paste0(sprintf("%d counterexamples", ft(fz$unsound_samples)),
+           card_delta(ft(fz$unsound), if (is.null(b_fz) || all(is.na(b_fz$unsound))) NA else tot(b_fz$unsound), -1))))
+  h(stat_card(ft(fz$accepted), "Definitions accepting calls outside",
+    sprintf("%d of %d calls outside the domain returned", ft(fz$accepted_samples), ft(fz$n_out))))
+  h(stat_card(ft(fz$crash) + ft(fz$effects), "Crashes and side effects",
+    sprintf("%d definitions crashed R &middot; %d had side effects", ft(fz$crash), ft(fz$effects))))
+  h('</div>')
+
+  def_cell <- function(r) sprintf('<td class="name">%s</td><td>%s</td>',
+    fuzz_link(r$package, r$card, esc(r$def)), if (r$kind == "r") "R" else "native")
+  ty_cell <- function(t) sprintf('<td class="ty">%s</td>', if (is.na(t)) "&mdash;" else esc(t))
+  samples_of <- function(r, dir, verdict)
+    fuzz_samples_df[fuzz_samples_df$package == r$package & fuzz_samples_df$def == r$def &
+                    fuzz_samples_df$kind == r$kind & fuzz_samples_df$dir == dir &
+                    fuzz_samples_df$verdict == verdict, , drop = FALSE]
+
+  unsound <- fuzz_df[fuzz_df$in_unsound > 0, , drop = FALSE]
+  if (nrow(unsound) > 0) {
+    unsound <- unsound[order(unsound$package, unsound$def), , drop = FALSE]
+    h('<h3 class="sub" id="unsound">Unsound definitions <small>one counterexample each</small></h3>')
+    rows <- vapply(seq_len(nrow(unsound)), function(i) {
+      r <- unsound[i, ]
+      s <- samples_of(r, "in", "unsound")
+      ce <- if (nrow(s) > 0) s[1, ] else NULL
+      sprintf('<tr><td class="pkg">%s</td>%s<td class="code">%s</td>%s%s<td class="num">%d / %d</td></tr>',
+        esc(r$package), def_cell(r),
+        if (is.null(ce)) "&mdash;" else esc(fuzz_call(r$def, ce$args)),
+        ty_cell(if (is.null(ce)) NA else ce$expected), ty_cell(if (is.null(ce)) NA else ce$result),
+        as.integer(r$in_unsound), as.integer(r$n_in))
+    }, character(1))
+    h(fuzz_table(c("Package", "Definition", "Kind", "Call", "Predicted", "Returned", "Unsound calls"), rows))
+  }
+
+  accepts <- fuzz_df[fuzz_df$out_accepted > 0, , drop = FALSE]
+  if (nrow(accepts) > 0) {
+    accepts <- accepts[order(-accepts$out_accepted / accepts$n_out, -accepts$out_accepted,
+                             accepts$package, accepts$def), , drop = FALSE]
+    h('<h3 class="sub" id="accepts">Domains larger than inferred <small>definitions by share of the calls outside their domain they accept</small></h3>')
+    accept_row <- function(i) {
+      r <- accepts[i, ]
+      s <- samples_of(r, "out", "accepted")
+      what <- if (nrow(s) == 0) "" else {
+        p <- ifelse(is.na(s$param), "(arguments)", s$param)
+        per <- tapply(s$op, p, function(o) paste(unique(o), collapse = ", "))
+        paste(sprintf("<code>%s</code>: %s", esc(names(per)), esc(per)), collapse = "; ")
+      }
+      sprintf('<tr><td class="pkg">%s</td>%s<td class="num">%d / %d</td><td>%s</td></tr>',
+        esc(r$package), def_cell(r), as.integer(r$out_accepted), as.integer(r$n_out), what)
+    }
+    head_ <- c("Package", "Definition", "Kind", "Accepted", "Changes accepted, by parameter")
+    shown <- seq_len(min(nrow(accepts), 25L))
+    h(fuzz_table(head_, vapply(shown, accept_row, character(1))))
+    if (nrow(accepts) > 25L)
+      h(sprintf('<details><summary>%d more definitions</summary>%s</details>', nrow(accepts) - 25L,
+        fuzz_table(head_, vapply(setdiff(seq_len(nrow(accepts)), shown), accept_row, character(1)))))
+  }
+
+  h('<details><summary>Verdicts per package</summary>')
+  vrow <- function(i) {
+    pkg <- summary_df$package[i]
+    fr <- fuzz_df[fuzz_df$package == pkg, , drop = FALSE]
+    if (!fuzzed[i]) return(sprintf('<tr><td class="pkg">%s</td><td colspan="2"><span class="na">%s</span></td></tr>',
+      esc(pkg), if (fz$fuzzed[i]) "no report (run killed)" else "not fuzzed"))
+    sum_cols <- as.data.frame(lapply(fr[grep("^(in|out)_", names(fr))], sum))
+    sprintf('<tr><td class="pkg">%s</td><td>%d: %s</td><td>%d: %s</td></tr>', esc(pkg),
+      as.integer(sum(fr$n_in)), fuzz_counts_str(sum_cols, "in", FUZZ_IN),
+      as.integer(sum(fr$n_out)), fuzz_counts_str(sum_cols, "out", FUZZ_OUT))
+  }
+  h(fuzz_table(c("Package", "Calls inside the domain", "Calls outside"),
+    vapply(seq_len(nrow(summary_df)), vrow, character(1))))
+  h('</details>')
 }
 
 # Missing prelude names: the most actionable R-side view. Only names whose
@@ -1615,7 +1868,7 @@ r_snippet <- function(pkg, file, line, next_line, max_lines = 200L) {
 # whose typing does not depend on the mode).
 render_function_block <- function(pkg, r, g = NULL, is_entry = FALSE, entry_conv = character(),
                                   snip = NULL, with_source = TRUE,
-                                  change = list(kind = "unchanged", html = "")) {
+                                  change = list(kind = "unchanged", html = ""), fuzz = NULL) {
   name <- r$function_name
   status <- r$status
   status_g <- if (is.null(g)) status else g$status
@@ -1636,16 +1889,20 @@ render_function_block <- function(pkg, r, g = NULL, is_entry = FALSE, entry_conv
   unbound <- if (isTRUE(!is.na(r$unbound_kind)) && !is.na(r$error_name)) r$error_name else ""
   annotated_badge <- if (isTRUE(as.logical(r$annotated)))
     ' <span class="badge badge-entry" title="checked against a #| signature rather than inferred">annotated</span>' else ''
-  hh <- c(hh, sprintf('<div class="func-list" data-side="%s" data-status="%s" data-status-g="%s" data-unbound="%s" data-unbound-kind="%s" data-entry="%s" data-conv="%s" data-name="%s" data-changed="%s" data-empty-ret="%s"><h3>%s %s%s%s%s%s%s</h3>',
+  # The fuzzing of this definition (an entry point may be fuzzed under several
+  # R names): a data-fuzz attribute for the filter, a badge, and its details.
+  fuzz_attr <- if (is.null(fuzz)) "" else sprintf(' data-fuzz="%s"', fuzz_state(fuzz$rows))
+  hh <- c(hh, sprintf('<div class="func-list" data-side="%s" data-status="%s" data-status-g="%s" data-unbound="%s" data-unbound-kind="%s" data-entry="%s" data-conv="%s" data-name="%s" data-changed="%s" data-empty-ret="%s"%s><h3>%s %s%s%s%s%s%s%s</h3>',
     esc(r$side), esc(status), esc(status_g), esc(unbound),
     esc(if (nzchar(unbound)) r$unbound_kind else ""),
-    entry_attr, esc(conv_attr), esc(tolower(name)), changed_attr, empty_attr, esc(name),
+    entry_attr, esc(conv_attr), esc(tolower(name)), changed_attr, empty_attr, fuzz_attr, esc(name),
     status_html,
     if (is_entry) ' <span class="badge badge-entry">entry</span>' else '',
     conv_badges,
     annotated_badge,
     change$html,
-    empty_badge))
+    empty_badge,
+    if (is.null(fuzz)) "" else fuzz_badge(fuzz$rows)))
   if (status %in% c("typed", "fallback")) {
     if (!is.na(r$type_sig) && nzchar(r$type_sig)) {
       hh <- c(hh, sprintf('<div class="type-sig">%s</div>', type_sig_html(r$type_sig)))
@@ -1678,6 +1935,15 @@ render_function_block <- function(pkg, r, g = NULL, is_entry = FALSE, entry_conv
   }
   if (!is.na(r$timing_sec)) {
     hh <- c(hh, sprintf('<div class="timing">timing: %s</div>', fmt_func_timing(r$timing_sec)))
+  }
+  if (!is.null(fuzz)) {
+    for (k in seq_len(nrow(fuzz$rows))) {
+      fr <- fuzz$rows[k, ]
+      s <- fuzz$samples[fuzz$samples$def == fr$def & fuzz$samples$kind == fr$kind, , drop = FALSE]
+      hh <- c(hh, fuzz_details(fr, s[order(as.integer(s$id)), , drop = FALSE],
+                               show_name = fr$def != name,
+                               show_type = !identical(fr$type, r$type_sig)))
+    }
   }
   if (with_source) {
     if (is.null(snip)) {
@@ -1747,6 +2013,21 @@ write_package_page <- function(pkg) {
       rs$n[si], rs$typed[si], rs$g_typed[si], rs$unbound_prelude[si])
   }
 
+  # Fuzzing: the rows of this package, looked up by card.
+  pkg_fuzz <- if (HAVE_FUZZ) fuzz_df[fuzz_df$package == pkg, , drop = FALSE] else NULL
+  has_fuzz <- NROW(pkg_fuzz) > 0L
+  pkg_samples <- if (has_fuzz) fuzz_samples_df[fuzz_samples_df$package == pkg, , drop = FALSE] else NULL
+  fuzz_for <- function(card, side) {
+    if (!has_fuzz) return(NULL)
+    fr <- pkg_fuzz[pkg_fuzz$card == card & pkg_fuzz$kind == side, , drop = FALSE]
+    if (nrow(fr) == 0L) NULL else list(rows = fr, samples = pkg_samples)
+  }
+  if (HAVE_FUZZ && fz$fuzzed[si]) {
+    subtitle <- paste0(subtitle, if (is.na(fz$defs[si])) " &middot; fuzzing: no report (run killed)" else
+      sprintf(' &middot; fuzzing: %d definitions, %d unsound, %d accept calls outside their domain',
+              as.integer(fz$defs[si]), as.integer(fz$unsound[si]), as.integer(fz$accepted[si])))
+  }
+
   ph <- character()
   ph <- c(ph, '<!DOCTYPE html>',
     '<html lang="en"><head><meta charset="utf-8">',
@@ -1782,6 +2063,8 @@ write_package_page <- function(pkg) {
     paste(status_boxes, collapse = ""),
     if (have_baseline) '<label><input type="checkbox" id="flt-changed"> changed only</label>' else '',
     '<label><input type="checkbox" id="flt-empty"> empty return only</label>',
+    if (has_fuzz) c('<label title="unsound, accepting calls outside the domain, or crashing"><input type="checkbox" id="flt-fuzz"> fuzzing findings only</label>',
+                    '<span class="filter-chip" id="flt-fuzz-name" hidden></span>'),
     '<span class="filter-chip" id="flt-unbound" hidden></span>',
     '<input type="search" id="flt-name" placeholder="name…">',
     sprintf('<span class="count"><span id="flt-count">%d</span> / %d</span>', total_cards, total_cards),
@@ -1818,7 +2101,7 @@ write_package_page <- function(pkg) {
           is_entry = is_ep,
           entry_conv = if (is_ep) ep_conv_for(ep_tbl, r$function_name) else character(),
           snip = source_snippet(pkg, r$function_name),
-          change = baseline_change(r)))
+          change = baseline_change(r), fuzz = fuzz_for(r$function_name, "native")))
       }
     }
     # Functions that existed in the baseline but are gone now (status change:
@@ -1854,7 +2137,7 @@ write_package_page <- function(pkg) {
         g <- g_by_key[[gradual_key(r$key)]]
         ph <- c(ph, render_function_block(pkg, r, g = g,
           snip = r_snippet(pkg, r$file, r$line, next_line[i]),
-          change = baseline_change(r)))
+          change = baseline_change(r), fuzz = fuzz_for(r$function_name, "r")))
       }
       ph <- c(ph, '</div>')
     }
@@ -1890,6 +2173,20 @@ write_package_page <- function(pkg) {
     '    x.addEventListener("click", () => { unbound = null; unboundChip.hidden = true; history.replaceState(null, "", location.pathname); apply(); });',
     '    unboundChip.append(x); unboundChip.hidden = false;',
     '  }',
+    if (has_fuzz) c(
+    '  // #fuzz: fuzzing findings only. #fuzz=<name>: the card of that definition',
+    '  // (links from the index page).',
+    '  const fuzzOnly = document.getElementById("flt-fuzz");',
+    '  const fuzzChip = document.getElementById("flt-fuzz-name");',
+    '  let fuzzName = null;',
+    '  if (location.hash === "#fuzz") fuzzOnly.checked = true;',
+    '  if (location.hash.startsWith("#fuzz=")) {',
+    '    fuzzName = decodeURIComponent(location.hash.slice(6)).toLowerCase();',
+    '    const c = document.createElement("code"); c.textContent = fuzzName;',
+    '    const x = document.createElement("button"); x.textContent = " ×"; x.title = "clear";',
+    '    x.addEventListener("click", () => { fuzzName = null; fuzzChip.hidden = true; history.replaceState(null, "", location.pathname); apply(); });',
+    '    fuzzChip.append("fuzzing of ", c, x); fuzzChip.hidden = false;',
+    '  }'),
     '  function apply() {',
     '    const side = radio("side") || "all";',
     '    const gradual = radio("mode") === "gradual";',
@@ -1910,7 +2207,11 @@ write_package_page <- function(pkg) {
     '      const okEmpty = !wantEmpty || c.dataset.emptyRet === "true";',
     '      const okUnbound = !unbound || (unbound.name ? c.dataset.unbound === unbound.name : c.dataset.unboundKind === "prelude");',
     '      const okName = !q || c.dataset.name.indexOf(q) !== -1;',
-    '      const show = okSide && okEp && okStat && okChanged && okEmpty && okUnbound && okName;',
+    if (has_fuzz) c(
+    '      const okFuzz = (!fuzzOnly.checked || ["unsound", "accepts", "crash"].includes(c.dataset.fuzz)) &&',
+    '        (!fuzzName || (c.dataset.name === fuzzName && c.dataset.fuzz));',
+    '      const show = okSide && okEp && okStat && okChanged && okEmpty && okUnbound && okName && okFuzz;')
+    else '      const show = okSide && okEp && okStat && okChanged && okEmpty && okUnbound && okName;',
     '      c.style.display = show ? "" : "none";',
     '      if (show) visible++;',
     '    });',

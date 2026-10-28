@@ -5,8 +5,7 @@ on:
     branches: [main]
   repository_dispatch:
     # typr-updated: a new TypR image (dispatched by PRL-PRG/typr).
-    # r-c-typing-updated: the legacy nativesem dispatch, kept as a fallback.
-    types: [typr-updated, r-c-typing-updated]
+    types: [typr-updated]
   workflow_dispatch:
     inputs:
       fuzz:

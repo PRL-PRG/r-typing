@@ -1152,6 +1152,18 @@ h(sprintf('<p class="subtitle">%s for %d CRAN packages &mdash; generated %s%s</p
   if (HAVE_R) 'TypR results (Rsem on the R code, NativeSem on the C code)' else 'Type-checking results',
   n_packages, format(Sys.time(), "%Y-%m-%d %H:%M"),
   checker_version_html()))
+# The previous dashboard, deployed next to this one by CI (DASHBOARD_PREV_URL,
+# e.g. prev/index.html). It is the baseline of the changes shown here. The
+# line is one element with its own class: CI deletes it from the copied
+# previous page, whose own previous dashboard is not deployed.
+prev_url <- Sys.getenv("DASHBOARD_PREV_URL")
+if (nzchar(prev_url) && !is.null(baseline_dir)) {
+  built <- b_checker_meta$prov$built_at
+  when <- if (!is.null(built) && !is.na(built) && nzchar(built))
+    sprintf(' (built %s)', esc(sub("T", " ", sub("Z$", " UTC", built)))) else ""
+  h(sprintf('<p class="subtitle prev-run"><a href="%s">Previous run</a>%s%s &mdash; the baseline of the changes below</p>',
+    esc(prev_url), when, checker_version_html(b_checker_meta)))
+}
 h(checker_status_html())
 
 if (HAVE_R) {

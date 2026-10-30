@@ -108,7 +108,11 @@ jobs:
       - name: Run type checker
         run: make typecheck
 
+      # On the default branch, the index links to the previous dashboard,
+      # deployed under prev/ below.
       - name: Parse results and generate webpage
+        env:
+          DASHBOARD_PREV_URL: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && 'prev/index.html' || '' }}
         run: make results webpage
 
       - name: Upload results
@@ -128,6 +132,18 @@ jobs:
             work/raw_output/strict/fuzz/
             work/library/install_status.csv
           if-no-files-found: ignore
+
+      # The previous dashboard (the baseline downloaded above) under prev/, so
+      # that the index can link to it. Added after the results artifact is
+      # uploaded, so that an artifact never nests the runs before it; the
+      # copied page's own link to its previous run is removed, that run not
+      # being deployed.
+      - name: Add the previous dashboard
+        if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && hashFiles('results.prev/index.html') != ''
+        run: |
+          rm -rf results/prev results.prev/prev
+          cp -r results.prev results/prev
+          sed -i '/class="subtitle prev-run"/d' results/prev/index.html
 
       - name: Upload dashboard for GitHub Pages
         if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)

@@ -1225,6 +1225,18 @@ time_digits <- if (!is.finite(max_elapsed)) 1L else if (max_elapsed < 10) 2L els
 time_fmt <- paste0("%.", time_digits, "f s")
 fmt_time <- function(t) if (is.na(t)) '<span class="na">&mdash;</span>' else sprintf(time_fmt, t)
 
+# Relative change of a time since the baseline. CI runners vary by about 10%
+# from a run to the next, so a smaller change is shown in grey.
+time_change_html <- function(now, before) {
+  if (is.null(before) || is.na(before) || is.na(now) || before <= 0) return("")
+  pct <- 100 * (now - before) / before
+  cls <- if (abs(pct) < 10) "delta-zero" else if (pct > 0) "delta-bad" else "delta-good"
+  sprintf(' <span class="delta %s" title="%s s in the baseline run">%s%.0f%%</span>',
+          cls, format(round(before, 1)), if (pct > 0) "+" else "", pct)
+}
+b_elapsed_by_pkg <- if (!is.null(b_summary_df) && "elapsed_sec" %in% names(b_summary_df))
+  setNames(b_summary_df$elapsed_sec, b_summary_df$package) else NULL
+
 # Build a baseline lookup keyed by package name for quick delta computation.
 b_typed_by_pkg <- if (!is.null(b_summary_df)) {
   setNames(b_nat$typed, b_summary_df$package)
@@ -1320,7 +1332,8 @@ if (HAVE_R) {
       if (is.na(debt) || debt == 0) as.character(if (is.na(debt)) "&mdash;" else 0L) else
         sprintf('<a href="pkg/%s.html#unbound">%d</a>', esc(pkg), as.integer(debt)),
       fuzz_cells(i, pkg),
-      fmt_time(summary_df$elapsed_sec[i]),
+      paste0(fmt_time(summary_df$elapsed_sec[i]),
+             time_change_html(summary_df$elapsed_sec[i], b_elapsed_by_pkg[pkg])),
       run_status_html(i)))
   }
   if (!is.null(b_summary_df)) {
@@ -1671,9 +1684,31 @@ timing_rows_of <- function(fdf) {
                stringsAsFactors = FALSE)
   }))
 }
+# Typing time against the baseline, over the definitions both runs timed
+# (matched by key, as the rest of the baseline comparison): a total over
+# different sets would credit or blame definitions for entering or leaving the
+# count. Per package; [NULL] without a baseline that has the times.
+common_timing <- function(fdf, bfdf) {
+  if (is.null(bfdf) || nrow(fdf) == 0L) return(NULL)
+  now <- fdf[!is.na(fdf$timing_sec), c("package", "key", "timing_sec"), drop = FALSE]
+  before <- bfdf[!is.na(bfdf$timing_sec), c("key", "timing_sec"), drop = FALSE]
+  m <- merge(now, before, by = "key", suffixes = c("", "_before"))
+  if (nrow(m) == 0L) return(NULL)
+  do.call(rbind, lapply(split(m, m$package), function(d)
+    data.frame(package = d$package[1], n_common = nrow(d), now = sum(d$timing_sec),
+               before = sum(d$timing_sec_before), stringsAsFactors = FALSE)))
+}
 if (HAVE_R) {
-  native_t <- timing_rows_of(functions_df[functions_df$side == "native", , drop = FALSE])
+  native_fdf <- functions_df[functions_df$side == "native", , drop = FALSE]
+  native_t <- timing_rows_of(native_fdf)
   r_t      <- timing_rows_of(r_strict)
+  b_native <- if (!is.null(b_functions_df))
+    b_functions_df[b_functions_df$side == "native", , drop = FALSE] else NULL
+  b_r <- if (!is.null(b_functions_df))
+    b_functions_df[b_functions_df$side == "r" & b_functions_df$mode == "strict", , drop = FALSE] else NULL
+  native_c <- common_timing(native_fdf, b_native)
+  r_c      <- common_timing(r_strict, b_r)
+  have_change <- !is.null(native_c) || !is.null(r_c)
   if (!is.null(native_t) || !is.null(r_t)) {
     if (!is.null(native_t)) native_t$side <- "native"
     if (!is.null(r_t)) r_t$side <- "R (strict)"
@@ -1681,17 +1716,38 @@ if (HAVE_R) {
     # Packages by their total time, a package's two rows together.
     pkg_total <- tapply(tt$total, tt$package, sum)
     tt <- tt[order(-pkg_total[tt$package], tt$package, tt$side), , drop = FALSE]
+    change_of <- function(pkg, side) {
+      cdf <- if (side == "native") native_c else r_c
+      if (is.null(cdf)) return(NULL)
+      cdf[match(pkg, cdf$package), , drop = FALSE]
+    }
     h('<h2>Inference timing <small>per native function and per R definition</small></h2>')
+    if (have_change) {
+      overall <- function(cdf, what) if (is.null(cdf)) NULL else
+        sprintf('%s: %s &rarr; %s%s on the %d definitions timed in both runs', what,
+                fmt_func_timing(sum(cdf$before)), fmt_func_timing(sum(cdf$now)),
+                time_change_html(sum(cdf$now), sum(cdf$before)), as.integer(sum(cdf$n_common)))
+      h(sprintf('<p class="phase-legend">Change since the baseline run, over the definitions both runs timed, so that definitions entering or leaving the count do not weigh in: %s. Changes under 10%% are grey: CI runners vary about that much from a run to the next.</p>',
+        paste(c(overall(native_c, "native"), overall(r_c, "R (strict)")), collapse = "; ")))
+    }
     h('<table><thead><tr><th>Package</th><th>Side</th>',
       '<th style="text-align:right">Timed</th><th style="text-align:right">Timed out</th>',
-      '<th style="text-align:right">Total</th><th style="text-align:right">Avg</th>',
+      '<th style="text-align:right">Total</th>',
+      if (have_change) '<th style="text-align:right" title="total over the definitions timed in both runs: baseline run, then this one">Common: before &rarr; now</th>',
+      '<th style="text-align:right">Avg</th>',
       '<th style="text-align:right">Median</th><th style="text-align:right">SD</th>',
       '<th style="text-align:right">Min</th><th style="text-align:right">Max</th></tr></thead><tbody>')
     for (i in seq_len(nrow(tt))) {
       r <- tt[i, ]
-      h(sprintf('<tr><td class="pkg"><a href="pkg/%s.html">%s</a></td><td>%s</td><td class="num">%d</td><td class="num">%d</td><td class="num">%s</td><td class="num">%s</td><td class="num">%s</td><td class="num">%s</td><td class="num">%s</td><td class="num">%s</td></tr>',
+      chg <- if (!have_change) "" else {
+        cr <- change_of(r$package, if (r$side == "native") "native" else "r")
+        if (is.null(cr) || is.na(cr$now)) '<td class="num"><span class="na">&mdash;</span></td>'
+        else sprintf('<td class="num">%s &rarr; %s%s</td>', fmt_func_timing(cr$before),
+                     fmt_func_timing(cr$now), time_change_html(cr$now, cr$before))
+      }
+      h(sprintf('<tr><td class="pkg"><a href="pkg/%s.html">%s</a></td><td>%s</td><td class="num">%d</td><td class="num">%d</td><td class="num">%s</td>%s<td class="num">%s</td><td class="num">%s</td><td class="num">%s</td><td class="num">%s</td><td class="num">%s</td></tr>',
         esc(r$package), esc(r$package), r$side, r$n, r$n_timeout,
-        fmt_func_timing(r$total), fmt_func_timing(r$mean), fmt_func_timing(r$median),
+        fmt_func_timing(r$total), chg, fmt_func_timing(r$mean), fmt_func_timing(r$median),
         fmt_func_timing(r$sd), fmt_func_timing(r$min), fmt_func_timing(r$max)))
     }
     h('</tbody></table>')

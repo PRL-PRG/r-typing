@@ -30,16 +30,22 @@ TS_LIB_DIR  ?= /home/pierre/Documents/RLanguage/r-parser/core/tree-sitter/lib
 # gradual gives it the dyn type instead.
 MODES ?= strict gradual
 
-# Pass arbitrary flags to the checker. Set FALLBACK=1 to add
-# --fallback-c-signature: when full-body inference fails, bind the function at
-# its declared C signature so callers don't cascade as "unbound variable".
+# Pass arbitrary flags to the checker. FALLBACK says which native functions
+# that fail to type are bound at their declared C signature, so that their
+# callers don't cascade as "unbound variable": all of them, none, or
+# except-all-sexp (the default): not those whose parameters and result are all
+# SEXP, whose signature only says that they take and return R values. 1 and 0
+# still mean all and none.
 # LOG_TIMINGS=1 adds NativeSem's per-function timing lines to the .out files;
 # the measurements come from the JSONL report either way.
-FALLBACK ?= 1
+FALLBACK ?= except-all-sexp
 LOG_TIMINGS ?= 0
 CHECKER_OPTS ?=
-ifeq ($(FALLBACK),1)
+ifneq ($(filter all 1,$(FALLBACK)),)
 CHECKER_OPTS += --fallback-c-signature
+else ifneq ($(filter none 0,$(FALLBACK)),)
+else
+CHECKER_OPTS += --fallback-mode $(FALLBACK)
 endif
 ifeq ($(LOG_TIMINGS),1)
 CHECKER_OPTS += --log-times

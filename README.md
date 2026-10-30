@@ -41,7 +41,7 @@ This runs the full pipeline: **download → extract → typecheck → results**.
 | `RUN_TIMEOUT` | `0` (off) | Wall-clock limit on one run, in seconds; a run that hits it is recorded with exit code 124 and the records it reported |
 | `MEM_LIMIT_MB` | `0` (off) | Address-space limit on one run, in MB |
 | `CHECKER_OPTS` | *(empty)* | Extra flags passed to the checker |
-| `FALLBACK` | `1` | When `FALLBACK=1`, appends `--fallback-c-signature` to `CHECKER_OPTS`. Binds native functions that fail body inference at their declared C signature, so their R callers don't cascade as "unbound variable". Such functions are reported as `fallback`, not `typed`. |
+| `FALLBACK` | `except-all-sexp` | Which native functions that fail body inference are bound at their declared C signature, so their callers don't cascade as "unbound variable": `all`, `none`, or `except-all-sexp`, all but those whose parameters and result are all `SEXP` (their signature only says that they take and return R values). `1` and `0` still mean `all` and `none`. Such functions are reported as `fallback`, not `typed`. |
 | `LOG_TIMINGS` | `0` | When `LOG_TIMINGS=1`, appends `--log-times`: NativeSem's per-function timing lines in the `.out` files. The measurements come from the JSONL report either way. |
 | `LIBRARY` | `work/library` | Where `make install` installs the packages, for fuzzing |
 | `BASELINE` | auto-detects `results.prev/` | Directory whose CSVs are diffed against the current run when generating the dashboard. Set `BASELINE=none` to disable, or `BASELINE=results.something` to compare against a specific snapshot. |
@@ -52,7 +52,7 @@ This runs the full pipeline: **download → extract → typecheck → results**.
 Examples:
 
 ```bash
-make FALLBACK=0                  # no C-signature fallback
+make FALLBACK=none               # no C-signature fallback (FALLBACK=all: for every function)
 make FUN_TIMEOUT=60              # longer per-definition timeout
 make MODES=strict                # strict runs only
 make CHECKER_OPTS='--debug'      # pass arbitrary flags
@@ -185,7 +185,7 @@ One row per package (never one per mode).
 | `n_functions` | Native functions reachable from an entry point |
 | `n_typed` | Native functions typed |
 | `n_untypeable`, `n_timeout`, `n_internal` | Native functions that failed, timed out, or hit an internal error |
-| `n_from_c_sig` | Native functions bound at their declared C signature after inference failed (`FALLBACK=1`) |
+| `n_from_c_sig` | Native functions bound at their declared C signature after inference failed (see `FALLBACK`) |
 | `n_empty_ret` | Native functions typed with an `empty` result |
 | `pct_typed` | Percentage of native functions typed |
 | `n_timed_meas`, `total_typing_sec`, `mean_typing_sec`, `median_typing_sec`, `sd_typing_sec`, `min_typing_sec`, `max_typing_sec` | Native per-function inference times |

@@ -15,7 +15,7 @@ params:
   top_n_categories: 8
   # Where a repository_dispatch run came from, by event type: TypR now, the
   # NativeSem repository for runs before the migration.
-  upstream_repo: "PRL-PRG/typr"
+  upstream_repo: "PRL-PRG/tyr"
   legacy_upstream_repo: "programLyrique/nativesem"
 ---
 

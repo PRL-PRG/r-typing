@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
   repository_dispatch:
-    # typr-updated: a new TypR image (dispatched by PRL-PRG/typr).
+    # typr-updated: a new TypR image (dispatched by PRL-PRG/tyr).
     types: [typr-updated]
   workflow_dispatch:
     inputs:

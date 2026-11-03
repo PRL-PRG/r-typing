@@ -556,9 +556,9 @@ change_info <- function(now, before) {
 
 # Inline checker version (e.g. `fa6d98c0-dirty`). Renders nothing when the
 # version file is missing (older results regenerated after the fact).
-PROV_REPOS <- c(typr = "PRL-PRG/typr", rsem = "E-Sh4rk/Rsem",
+PROV_REPOS <- c(typr = "PRL-PRG/tyr", rsem = "E-Sh4rk/Rsem",
                 nativesem = "programLyrique/nativesem", rstt = "E-Sh4rk/rstt")
-PROV_LABELS <- c(typr = "TypR", rsem = "Rsem", nativesem = "NativeSem", rstt = "rstt")
+PROV_LABELS <- c(typr = "tyr", rsem = "Rsem", nativesem = "NativeSem", rstt = "rstt")
 
 # TypR: the four commits, each linked, and whether the submodules were the
 # ones typr pins. Otherwise the inline checker version (e.g.

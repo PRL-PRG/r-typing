@@ -1,6 +1,6 @@
 # r-typing
 
-Pipeline to download CRAN package sources, run the **TypR** type checker on them, and collect results into CSVs and an HTML dashboard ("R we type yet?"). TypR checks a whole package: NativeSem types the C code under `src/`, those types are bound under their R names, then Rsem checks the R code under `R/`. The checker is a separate project ([PRL-PRG/typr](https://github.com/PRL-PRG/typr)); this repo just orchestrates it.
+Pipeline to download CRAN package sources, run the **TypR** type checker on them, and collect results into CSVs and an HTML dashboard ("R we type yet?"). TypR checks a whole package: NativeSem types the C code under `src/`, those types are bound under their R names, then Rsem checks the R code under `R/`. The checker is a separate project ([PRL-PRG/tyr](https://github.com/PRL-PRG/tyr)); this repo just orchestrates it.
 
 Every package is checked twice: **strict** reports every name TypR cannot resolve, **gradual** (`--gradual`) gives such names the dynamic type instead. The dashboard shows the pair.
 

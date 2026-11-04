@@ -18,7 +18,7 @@ Every package is checked twice: **strict** reports every name TypR cannot resolv
 ## Quick start
 
 ```bash
-# With a built TypR checkout next to this one (../typr):
+# With a built tyr checkout next to this one (../tyr):
 # edit packages.txt to list the packages you want, then:
 make
 ```
@@ -29,7 +29,7 @@ This runs the full pipeline: **download → extract → typecheck → results**.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `TYPR_DIR` | `../typr` | TypR checkout, built by `make build-checker` |
+| `TYPR_DIR` | `../tyr` | tyr checkout, built by `make build-checker` |
 | `CHECKER_DIR` | `$(TYPR_DIR)/_build/default` | Directory the checker runs from; NativeSem looks for `types/` among its ancestors |
 | `CHECKER` | `$(CHECKER_DIR)/bin/main.exe` | Checker binary |
 | `PRELUDE` | `$(CHECKER_DIR)/prelude/base.R` | R signatures loaded before each package (`--prelude`); skipped if the file does not exist |

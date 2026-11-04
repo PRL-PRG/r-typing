@@ -1,7 +1,7 @@
-# The checker is TypR. In the CI image CHECKER_DIR/CHECKER come from the
-# environment (/checker); locally they default to a sibling typr checkout's
+# The checker is tyr. In the CI image CHECKER_DIR/CHECKER come from the
+# environment (/checker); locally they default to a sibling tyr checkout's
 # build tree, which holds types/ and prelude/ next to bin/.
-TYPR_DIR    ?= $(abspath ../typr)
+TYPR_DIR    ?= $(abspath ../tyr)
 CHECKER_DIR ?= $(TYPR_DIR)/_build/default
 CHECKER     ?= $(CHECKER_DIR)/bin/main.exe
 PRELUDE     ?= $(CHECKER_DIR)/prelude/base.R
@@ -76,7 +76,7 @@ FUZZ_RUN_TIMEOUT ?= 600
 FUZZ_MEM_MB ?= 4096
 FUZZ_SANDBOX ?= bwrap
 FUZZ_UNSAFE ?= 0
-# The harness: the image's, or the typr checkout's.
+# The harness: the image's, or the tyr checkout's.
 FUZZ_HARNESS ?= $(or $(TYPR_FUZZ_HARNESS),$(TYPR_DIR)/fuzz)
 
 export CHECKER_DIR CHECKER PRELUDE TS_LIB_DIR FUN_TIMEOUT CHECKER_OPTS PERF PERF_OPTS RUN_TIMEOUT MEM_LIMIT_MB

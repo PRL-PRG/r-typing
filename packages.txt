@@ -13,3 +13,5 @@ sandwich
 ssh
 zoo
 tidyr
+quadprog
+KernSmooth

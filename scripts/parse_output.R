@@ -149,7 +149,12 @@ native_summary <- function(rep) {
     ),
     timing_stats(fld(fn, "elapsed_sec", NA_real_)),
     list(
-      phase_load_ty_sec        = fld(rep$run, "load_ty_sec", NA_real_)[1L],
+      # A phase record since TypR loads the .ty files after declaring the
+      # class-overloads; older reports have it in the run record.
+      phase_load_ty_sec        = {
+        s <- phase_sec(rep, "load_ty")
+        if (is.na(s)) fld(rep$run, "load_ty_sec", NA_real_)[1L] else s
+      },
       phase_parsing_sec        = phase_sec(rep, "c_parsing"),
       phase_fundef_pass_sec    = phase_sec(rep, "native_functions")
     )

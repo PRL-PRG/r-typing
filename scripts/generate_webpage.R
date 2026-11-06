@@ -193,6 +193,44 @@ if (!is.null(b_functions_df)) {
 scope_moved <- function(pkg) !is.null(native_scope) && pkg %in% native_scope$package &&
   native_scope[pkg, "added"] + native_scope[pkg, "removed"] > 0L
 
+# How much slower or faster a function types than in the baseline: the ratio
+# of its typing times, this run's over the baseline's, for the native functions
+# and the R definitions (strict mode) both runs typed. A run's total time also
+# moves with the functions that start or stop typing or timing out; this
+# median does not. A function under RATIO_FLOOR seconds in both runs is left
+# out: at that scale the ratio measures the clock. [time_ratios] is NULL
+# without a baseline that has the times, otherwise one row per such function.
+RATIO_FLOOR <- 0.01
+time_ratios <- NULL
+if (!is.null(b_functions_df)) {
+  typed_times <- function(df) {
+    d <- df[df$status == "typed" & !is.na(df$timing_sec) &
+            (df$side == "native" | df$mode == "strict"), , drop = FALSE]
+    d[, c("package", "side", "key", "timing_sec")]
+  }
+  m <- merge(typed_times(functions_df), typed_times(b_functions_df)[, c("key", "timing_sec")],
+             by = "key", suffixes = c("", "_before"))
+  m <- m[pmax(m$timing_sec, m$timing_sec_before) >= RATIO_FLOOR & m$timing_sec_before > 0, , drop = FALSE]
+  if (nrow(m) > 0L) time_ratios <- data.frame(package = m$package, side = m$side,
+    ratio = m$timing_sec / m$timing_sec_before, stringsAsFactors = FALSE)
+}
+# The median ratio of [rows] (of [time_ratios]), rendered as "×0.94", coloured
+# as [time_change_html] colours a change: grey within 10%. The tooltip gives
+# the count and the median of each side.
+ratio_html <- function(rows) {
+  if (is.null(rows) || nrow(rows) == 0L) return('<span class="na">&mdash;</span>')
+  r <- median(rows$ratio)
+  cls <- if (abs(r - 1) < 0.1) "delta-zero" else if (r > 1) "delta-bad" else "delta-good"
+  side_str <- function(s, what) {
+    x <- rows$ratio[rows$side == s]
+    if (length(x) == 0L) NULL else sprintf("%s: &times;%.2f over %d", what, median(x), length(x))
+  }
+  sprintf('<span class="delta %s" title="median of this run&#39;s typing time over the baseline&#39;s, for the %d function%s typed in both runs (%s); those under %g s in both runs are left out">&times;%.2f</span>',
+    cls, nrow(rows), if (nrow(rows) == 1L) "" else "s",
+    paste(c(side_str("native", "native"), side_str("r", "R strict")), collapse = "; "),
+    RATIO_FLOOR, r)
+}
+
 raw_dir <- "work/raw_output"
 sources_root <- "work/sources"
 pkg_dir <- file.path(dirname(output_file), "pkg")
@@ -1199,6 +1237,9 @@ if (HAVE_R) {
               nrow(moved), if (nrow(moved) == 1L) "" else "s", sum(moved$added), sum(moved$removed)))))
   h(stat_card(pct_str(tot(nat$ep_linked), total_ep), "Native &rarr; R link rate",
     sprintf("%d / %d entry points bound in R", tot(nat$ep_linked), total_ep)))
+  if (!is.null(time_ratios))
+    h(stat_card(ratio_html(time_ratios), "Time to type a function",
+      sprintf("median ratio to the baseline over the %d functions typed in both runs", nrow(time_ratios))))
   h('</div>')
   h('<div class="stats secondary">')
   h(stat_card(total_ep, "entry points", sprintf('<code>.Call</code>&nbsp;%d &middot; <code>.C</code>&nbsp;%d &middot; <code>.Fortran</code>&nbsp;%d &middot; <code>.External</code>&nbsp;%d',
@@ -1299,12 +1340,15 @@ if (HAVE_R) {
     if (HAVE_FUZZ) c('<th class="grp-start" title="typed definitions and entry points called">Defs</th>',
       '<th title="definitions with a call inside their inferred domain returning outside the predicted type">Unsound</th>',
       '<th title="definitions returning on a call just outside their inferred domain">Accept outside</th>'),
-    '<th class="grp-start">Time</th>', '<th>Status</th>')
+    '<th class="grp-start">Time</th>',
+    if (!is.null(time_ratios)) '<th title="median ratio of the time to type a function to the baseline&#39;s, over the functions typed in both runs">Per function</th>',
+    '<th>Status</th>')
+  n_run <- if (is.null(time_ratios)) 2L else 3L
   h('<table><colgroup><col></colgroup><colgroup span="2"></colgroup><colgroup span="2"></colgroup><colgroup span="5"></colgroup>',
-    if (HAVE_FUZZ) '<colgroup span="3"></colgroup>', '<colgroup span="2"></colgroup>',
+    if (HAVE_FUZZ) '<colgroup span="3"></colgroup>', sprintf('<colgroup span="%d"></colgroup>', n_run),
     '<thead><tr><th></th><th colspan="2" class="grp">Native</th><th colspan="2" class="grp">Linkage</th>',
     '<th colspan="5" class="grp">R definitions</th>', if (HAVE_FUZZ) '<th colspan="3" class="grp">Fuzzing</th>',
-    '<th colspan="2" class="grp">Run</th></tr>',
+    sprintf('<th colspan="%d" class="grp">Run</th></tr>', n_run),
     '<tr>', paste(pkg_table_th, collapse = ""), '</tr></thead><tbody>')
   b_unsound_by_pkg <- if (!is.null(b_fz) && any(!is.na(b_fz$unsound)))
     setNames(b_fz$unsound, b_summary_df$package) else NULL
@@ -1334,7 +1378,9 @@ if (HAVE_R) {
         pct_bar(nat$ep_linked[i], nat$ep[i], "no entry point"))
     gap <- rs$g_typed[i] - rs$typed[i]
     debt <- rs$unbound_prelude[i]
-    h(sprintf('<tr><td class="pkg">%s</td>%s<td class="num grp-start">%s</td><td>%s%s%s</td><td>%s</td><td class="num">%s</td><td class="num">%s</td>%s<td class="num grp-start">%s</td><td>%s</td></tr>',
+    ratio_cell <- if (is.null(time_ratios)) "" else
+      sprintf('<td class="num">%s</td>', ratio_html(time_ratios[time_ratios$package == pkg, , drop = FALSE]))
+    h(sprintf('<tr><td class="pkg">%s</td>%s<td class="num grp-start">%s</td><td>%s%s%s</td><td>%s</td><td class="num">%s</td><td class="num">%s</td>%s<td class="num grp-start">%s</td>%s<td>%s</td></tr>',
       pkg_link, native_cells,
       if (is.na(rs$n[i])) "&mdash;" else as.character(rs$n[i]),
       pct_bar(rs$typed[i], rs$n[i], "no R definitions"), chip(rs$timeout[i], "timed out"),
@@ -1346,7 +1392,7 @@ if (HAVE_R) {
       fuzz_cells(i, pkg),
       paste0(fmt_time(summary_df$elapsed_sec[i]),
              time_change_html(summary_df$elapsed_sec[i], b_elapsed_by_pkg[pkg])),
-      run_status_html(i)))
+      ratio_cell, run_status_html(i)))
   }
   if (!is.null(b_summary_df)) {
     for (pkg in setdiff(b_summary_df$package, summary_df$package)) {

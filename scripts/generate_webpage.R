@@ -111,6 +111,8 @@ backfill_functions <- function(df) {
   df$side <- getcol(df, "side", "native")
   df$mode <- getcol(df, "mode", "strict")
   df$degenerate <- getcol(df, "degenerate", NA)
+  df$any_arg <- getcol(df, "any_arg", NA)
+  df$any_args <- getcol(df, "any_args", NA)
   df$anonymous <- getcol(df, "anonymous", FALSE)
   for (col in c("timing_sec", "file", "line", "annotated", "error_name",
                 "unbound_kind", "error_line"))
@@ -564,6 +566,28 @@ is_empty_ret <- function(fdf) {
   typed & deg
 }
 
+# --- "argument typed any" detection ---
+# A typed function with a parameter typed `any` in at least one of its arrows:
+# inference learned nothing about that argument. TypR computes it on the type
+# itself (`any_arg`, with the parameters in `any_args`: names on the R side,
+# 1-based positions on the native side). Older results only have the type
+# string, searched for an `any` parameter: `x: any` in an R signature (not
+# `...`), `any` or a `tupleN` (N arguments of any type) in a native one. The
+# search is approximate, and only used for a baseline that predates the field.
+ANY_PARAM_RE <- paste0(
+  "(^|[(,] ?)\\.?[A-Za-z_][A-Za-z0-9._]*\\??: any[,)]",  # R: (x: any, ...)
+  "|(\\[|, )any(,|\\])",                                  # native: [c_int, any]
+  "|\\btuple[0-9]+\\b")                                     # native: tuple2 -> ...
+has_any_arg <- function(fdf) {
+  if (nrow(fdf) == 0L) return(logical())
+  typed <- fdf$status == "typed"
+  flag <- as.logical(fdf$any_arg)
+  legacy <- is.na(flag)
+  flag[legacy] <- !is.na(fdf$type_sig[legacy]) &
+    grepl(ANY_PARAM_RE, fdf$type_sig[legacy], perl = TRUE)
+  typed & flag
+}
+
 # --- Status-change classification (vs baseline) ---
 # Rank statuses so we can colour a transition as an improvement or regression.
 # `fallback` (bound at its declared C signature after inference failed) ranks
@@ -845,6 +869,7 @@ common_style <- function() {
     '.stat-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 1rem 1.25rem; }',
     '.stat-card .value { font-size: 1.75rem; font-weight: 700; }',
     '.stat-card .label { color: var(--muted); font-size: .85rem; }',
+    '.stat-card .label a { color: var(--accent); text-decoration: none; }',
     '.stat-card.progress .progress-line { font-size: .85rem; color: var(--muted); margin-top: .25rem; font-family: "JetBrains Mono", monospace; }',
     'h2 { font-size: 1.25rem; margin: 2rem 0 1rem; }',
     'h2 small { font-weight: 400; color: var(--muted); font-size: .85rem; margin-left: .5rem; }',
@@ -869,6 +894,7 @@ common_style <- function() {
     '.badge-entry { background: #e0e7ff; color: #3730a3; }',
     '.badge-conv { background: #ccfbf1; color: #115e59; font-family: "JetBrains Mono", monospace; }',
     '.badge-empty { background: #fde68a; color: #92400e; }',
+    '.badge-any { background: #fef3c7; color: #92400e; }',
     '.badge-change-new { background: #e0e7ff; color: #3730a3; }',
     '.badge-change-good { background: var(--good-bg); color: var(--good); font-family: "JetBrains Mono", monospace; }',
     '.badge-change-bad  { background: var(--bad-bg);  color: var(--bad); font-family: "JetBrains Mono", monospace; }',
@@ -979,6 +1005,26 @@ pct_str <- function(num, den) if (is.na(den) || den == 0) "&mdash;" else sprintf
 card_delta <- function(now, before, good_dir = 1) {
   if (is.null(before) || is.na(before)) return("")
   paste0(" ", delta_html(as.integer(now - before), good_dir))
+}
+
+# A summary card for a type smell ([smell] picks the definitions): how many
+# typed definitions have it on each side (R in strict mode), with the change
+# from the baseline, and a link to its section ([anchor]).
+smell_card <- function(smell, label, anchor) {
+  count <- function(fdf, side) {
+    fdf <- fdf[fdf$side == side & fdf$mode == "strict" & !fdf$anonymous, , drop = FALSE]
+    as.integer(sum(smell(fdf), na.rm = TRUE))
+  }
+  sides <- c(if (HAVE_NATIVE) "native", if (HAVE_R) "r")
+  now <- vapply(sides, function(sd) count(functions_df, sd), integer(1))
+  before <- if (is.null(b_functions_df)) NA else
+    sum(vapply(sides, function(sd) count(b_functions_df, sd), integer(1)))
+  sub <- if (length(sides) < 2L) "typed definitions" else
+    sprintf("native %d &middot; R %d (strict)", now[["native"]], now[["r"]])
+  # The section is left out when neither run has any.
+  linked <- if (sum(now) > 0L || isTRUE(before > 0L))
+    sprintf('<a href="#%s">%s</a>', anchor, label) else label
+  stat_card(sum(now), linked, paste0(sub, card_delta(sum(now), before, -1)))
 }
 
 # One stage of the native -> R funnel: a bar scaled to the panel's own
@@ -1226,6 +1272,8 @@ if (HAVE_R) {
   h(stat_card(hard, "Real typing failures",
     paste0("untypeable or timed out even in gradual mode",
            card_delta(hard, if (is.null(b_rs)) NA else b_tot(b_rs$g_untypeable) + b_tot(b_rs$g_timeout), -1))))
+  h(smell_card(is_empty_ret, "Typed as <code>empty</code>", "smell-empty"))
+  h(smell_card(has_any_arg, "Argument typed <code>any</code>", "smell-any"))
   moved <- if (is.null(native_scope)) native_scope else
     native_scope[native_scope$added + native_scope$removed > 0L, , drop = FALSE]
   h(stat_card(pct_str(total_typed, total_functions), "Native functions typed",
@@ -1267,6 +1315,8 @@ h(sprintf('<div class="stat-card"><div class="value">%.1f%%</div><div class="lab
 h(sprintf('<div class="stat-card"><div class="value">%.1f%%</div><div class="label">Entrypoints typed</div><div class="ep-breakdown">%d / %d</div></div>',
   pct_ep_typed, total_ep_typed, total_ep))
 h(sprintf('<div class="stat-card"><div class="value">%d</div><div class="label">Functions timed out</div></div>', total_timeout))
+h(smell_card(is_empty_ret, "Typed as <code>empty</code>", "smell-empty"))
+h(smell_card(has_any_arg, "Argument typed <code>any</code>", "smell-any"))
 h(sprintf('<div class="stat-card"><div class="value">%d / %d</div><div class="label">Packages without crash</div></div>', n_ok, n_packages))
 h('</div>')
 }
@@ -1658,18 +1708,22 @@ if (HAVE_R) {
 # because these DID type: an `empty` result is a quality red flag, not a
 # failure. Placed next to the error section because it belongs to the same
 # family of red flags. One table per side, each against its own typed count.
-empty_counts_by_pkg <- function(fdf, side = "native", mode = "strict") {
+smell_counts_by_pkg <- function(fdf, smell, side = "native", mode = "strict") {
   fdf <- fdf[fdf$side == side & fdf$mode == mode & !fdf$anonymous, , drop = FALSE]
   if (nrow(fdf) == 0L) return(setNames(integer(0), character(0)))
-  ty <- fdf[is_empty_ret(fdf), , drop = FALSE]
+  ty <- fdf[smell(fdf), , drop = FALSE]
   if (nrow(ty) == 0L) return(setNames(integer(0), character(0)))
   tbl <- table(ty$package)
   setNames(as.integer(tbl), names(tbl))
 }
 
-render_empty_section <- function(side, typed_counts, heading, legend, what) {
-  emp_now  <- empty_counts_by_pkg(functions_df, side)
-  emp_base <- if (!is.null(b_functions_df)) empty_counts_by_pkg(b_functions_df, side) else integer(0)
+# One table of a type smell ([smell] picks the definitions) for one side: its
+# count per package, against the typed definitions, linking to the package
+# page filtered on it ([anchor]).
+render_smell_section <- function(side, typed_counts, heading, legend, what,
+                                 smell = is_empty_ret, column = "Empty returns", anchor = "empty") {
+  emp_now  <- smell_counts_by_pkg(functions_df, smell, side)
+  emp_base <- if (!is.null(b_functions_df)) smell_counts_by_pkg(b_functions_df, smell, side) else integer(0)
   total_empty      <- sum(emp_now)
   total_empty_base <- sum(emp_base)
   if (total_empty == 0L && length(emp_base) == 0L) return(invisible())
@@ -1684,7 +1738,7 @@ render_empty_section <- function(side, typed_counts, heading, legend, what) {
   typed_by_pkg <- setNames(typed_counts, summary_df$package)
 
   base_col <- if (!is.null(baseline_dir)) '<th style="text-align:right">Before</th><th style="text-align:right">&Delta;</th>' else ''
-  h(sprintf('<table><thead><tr><th>Package</th><th style="text-align:right">Empty returns</th><th style="text-align:right">%% of %s</th>', what),
+  h(sprintf('<table><thead><tr><th>Package</th><th style="text-align:right">%s</th><th style="text-align:right">%% of %s</th>', column, what),
     base_col, '</tr></thead>')
   # The total line comes first, tinted, so the global figure and its change
   # are visible at a glance.
@@ -1705,7 +1759,7 @@ render_empty_section <- function(side, typed_counts, heading, legend, what) {
       extra <- sprintf('<td class="num">%d</td><td class="num">%s</td>',
                        base_for(p), delta_html(cnt - base_for(p), -1))
     }
-    pkg_link <- sprintf('<a href="pkg/%s.html#empty">%s</a>', esc(p), esc(p))
+    pkg_link <- sprintf('<a href="pkg/%s.html#%s">%s</a>', esc(p), anchor, esc(p))
     h(sprintf('<tr><td class="pkg">%s</td><td class="num">%d</td><td class="num">%s</td>%s</tr>',
       pkg_link, cnt, pctp, extra))
   }
@@ -1713,21 +1767,43 @@ render_empty_section <- function(side, typed_counts, heading, legend, what) {
 }
 
 if (HAVE_NATIVE) {
-  render_empty_section("native", nat$typed,
-    if (HAVE_R) '<h2>Typed as <code>empty</code> <small>typed, but the inferred result is <code>empty</code> (bottom)</small></h2><h3 class="sub">Native functions</h3>'
-    else '<h2>Functions typed as <code>empty</code> <small>typed, but the inferred result is <code>empty</code> (bottom)</small></h2>',
+  render_smell_section("native", nat$typed,
+    if (HAVE_R) '<h2 id="smell-empty">Typed as <code>empty</code> <small>typed, but the inferred result is <code>empty</code> (bottom)</small></h2><h3 class="sub">Native functions</h3>'
+    else '<h2 id="smell-empty">Functions typed as <code>empty</code> <small>typed, but the inferred result is <code>empty</code> (bottom)</small></h2>',
     paste0('<p class="phase-legend">An <code>empty</code> return means inference found no usable value &mdash; usually a red flag,',
       ' though it can be legitimate for bail-out helpers (e.g. <code>bail_if</code>-style functions that never return).',
       ' Drill into a package and use the <em>empty return only</em> filter to see which functions.</p>'),
     "pkg typed")
 }
 if (HAVE_R) {
-  render_empty_section("r", rs$typed,
+  render_smell_section("r", rs$typed,
     if (HAVE_NATIVE) '<h3 class="sub">R definitions <small>strict mode</small></h3>'
-    else '<h2>Typed as <code>empty</code> <small>R definitions, strict mode</small></h2>',
+    else '<h2 id="smell-empty">Typed as <code>empty</code> <small>R definitions, strict mode</small></h2>',
     paste0('<p class="phase-legend">An R definition typed <code>empty</code> is a function inference concluded can never return &mdash;',
       ' more alarming than on the C side, where bail-out helpers that always raise an R error are common.</p>'),
     "pkg R typed")
+}
+
+# Definitions with a parameter typed `any`, laid out as the `empty` ones.
+ANY_LEGEND <- paste0(' It is often a smell (a value inference could not follow), but not always:',
+  ' a parameter the body never uses, or one a function accepts whatever it is, is rightly <code>any</code>.',
+  ' Type variables do not count, nor does <code>...</code>.')
+if (HAVE_NATIVE) {
+  render_smell_section("native", nat$typed,
+    if (HAVE_R) '<h2 id="smell-any">Argument typed <code>any</code> <small>typed, but a parameter is <code>any</code> in at least one arrow</small></h2><h3 class="sub">Native functions</h3>'
+    else '<h2 id="smell-any">Functions with an argument typed <code>any</code> <small>typed, but a parameter is <code>any</code> in at least one arrow</small></h2>',
+    paste0('<p class="phase-legend">On the C side, <code>any</code> comes from a value NativeSem could not type',
+      ' (an unknown typedef, a library call without a signature, a function-like macro&rsquo;s parameters).',
+      ANY_LEGEND, ' Use the <em>argument typed any</em> filter of a package to see which functions and parameters.</p>'),
+    "pkg typed", has_any_arg, "Argument typed any", "any")
+}
+if (HAVE_R) {
+  render_smell_section("r", rs$typed,
+    if (HAVE_NATIVE) '<h3 class="sub">R definitions <small>strict mode</small></h3>'
+    else '<h2 id="smell-any">Argument typed <code>any</code> <small>R definitions, strict mode</small></h2>',
+    paste0('<p class="phase-legend">On the R side, <code>any</code> usually flows from a function whose result Rsem knows nothing about.',
+      if (HAVE_NATIVE) '' else ANY_LEGEND, '</p>'),
+    "pkg R typed", has_any_arg, "Argument typed any", "any")
 }
 
 # Per-function (per-definition) inference timing.
@@ -1997,6 +2073,16 @@ render_function_block <- function(pkg, r, g = NULL, is_entry = FALSE, entry_conv
   empty_attr <- if (empty_ret) "true" else "false"
   empty_badge <- if (empty_ret)
     ' <span class="badge badge-empty" title="result type is empty (bottom) &mdash; inference found no usable return; often a red flag">empty return</span>' else ''
+  # The parameters typed `any`: by name in R, by position in C. An older
+  # result knows only that there is one.
+  any_arg <- isTRUE(has_any_arg(r))
+  any_attr <- if (any_arg) "true" else "false"
+  any_badge <- if (any_arg) {
+    params <- if (is.na(r$any_args)) character() else strsplit(r$any_args, ";", fixed = TRUE)[[1]]
+    shown <- if (identical(r$side, "native")) paste("arg", params) else params
+    sprintf(' <span class="badge badge-any" title="a parameter typed any in at least one arrow &mdash; inference learned nothing about it">any: %s</span>',
+            if (length(shown) == 0L) "argument" else esc(paste(shown, collapse = ", ")))
+  } else ''
   status_html <- if (identical(status, status_g)) status_badge(status) else
     sprintf('<span class="st-strict">%s</span><span class="st-gradual">%s</span>',
             status_badge(status), status_badge(status_g))
@@ -2006,16 +2092,17 @@ render_function_block <- function(pkg, r, g = NULL, is_entry = FALSE, entry_conv
   # The fuzzing of this definition (an entry point may be fuzzed under several
   # R names): a data-fuzz attribute for the filter, a badge, and its details.
   fuzz_attr <- if (is.null(fuzz)) "" else sprintf(' data-fuzz="%s"', fuzz_state(fuzz$rows))
-  hh <- c(hh, sprintf('<div class="func-list" data-side="%s" data-status="%s" data-status-g="%s" data-unbound="%s" data-unbound-kind="%s" data-entry="%s" data-conv="%s" data-name="%s" data-changed="%s" data-empty-ret="%s"%s><h3>%s %s%s%s%s%s%s%s</h3>',
+  hh <- c(hh, sprintf('<div class="func-list" data-side="%s" data-status="%s" data-status-g="%s" data-unbound="%s" data-unbound-kind="%s" data-entry="%s" data-conv="%s" data-name="%s" data-changed="%s" data-empty-ret="%s" data-any-arg="%s"%s><h3>%s %s%s%s%s%s%s%s%s</h3>',
     esc(r$side), esc(status), esc(status_g), esc(unbound),
     esc(if (nzchar(unbound)) r$unbound_kind else ""),
-    entry_attr, esc(conv_attr), esc(tolower(name)), changed_attr, empty_attr, fuzz_attr, esc(name),
+    entry_attr, esc(conv_attr), esc(tolower(name)), changed_attr, empty_attr, any_attr, fuzz_attr, esc(name),
     status_html,
     if (is_entry) ' <span class="badge badge-entry">entry</span>' else '',
     conv_badges,
     annotated_badge,
     change$html,
     empty_badge,
+    any_badge,
     if (is.null(fuzz)) "" else fuzz_badge(fuzz$rows)))
   if (status %in% c("typed", "fallback")) {
     if (!is.na(r$type_sig) && nzchar(r$type_sig)) {
@@ -2177,6 +2264,7 @@ write_package_page <- function(pkg) {
     paste(status_boxes, collapse = ""),
     if (have_baseline) '<label><input type="checkbox" id="flt-changed"> changed only</label>' else '',
     '<label><input type="checkbox" id="flt-empty"> empty return only</label>',
+    '<label title="a parameter typed any in at least one arrow"><input type="checkbox" id="flt-any"> argument typed any</label>',
     if (has_fuzz) c('<label title="unsound, accepting calls outside the domain, or crashing"><input type="checkbox" id="flt-fuzz"> fuzzing findings only</label>',
                     '<span class="filter-chip" id="flt-fuzz-name" hidden></span>'),
     '<span class="filter-chip" id="flt-unbound" hidden></span>',
@@ -2191,7 +2279,7 @@ write_package_page <- function(pkg) {
   gone_card <- function(g, side) {
     dropped <- side == "native" && scope_moved(pkg)
     sprintf(
-      '<div class="func-list" data-side="%s" data-status="gone" data-entry="%s" data-conv="" data-name="%s" data-changed="true" data-empty-ret="false"><h3>%s <span class="badge %s">%s</span></h3><div class="error-line">was <strong>%s</strong> in the baseline; %s</div></div>',
+      '<div class="func-list" data-side="%s" data-status="gone" data-entry="%s" data-conv="" data-name="%s" data-changed="true" data-empty-ret="false" data-any-arg="false"><h3>%s <span class="badge %s">%s</span></h3><div class="error-line">was <strong>%s</strong> in the baseline; %s</div></div>',
       side, if (g$function_name %in% ep_set) "true" else "false", esc(tolower(g$function_name)),
       esc(g$function_name),
       if (dropped) "badge-change-neutral" else "badge-change-bad", if (dropped) "not analysed" else "gone",
@@ -2229,7 +2317,7 @@ write_package_page <- function(pkg) {
       conv_attr <- paste(convs, collapse = ",")
       conv_badges <- paste(sprintf(' <span class="badge badge-conv">%s</span>', esc(convs)), collapse = "")
       ph <- c(ph, sprintf(
-        '<div class="func-list" data-side="native" data-status="unknown" data-entry="true" data-conv="%s" data-name="%s" data-changed="false" data-empty-ret="false"><h3>%s <span class="badge">unknown</span> <span class="badge badge-entry">entry</span>%s</h3><div class="error-line">%s</div></div>',
+        '<div class="func-list" data-side="native" data-status="unknown" data-entry="true" data-conv="%s" data-name="%s" data-changed="false" data-empty-ret="false" data-any-arg="false"><h3>%s <span class="badge">unknown</span> <span class="badge badge-entry">entry</span>%s</h3><div class="error-line">%s</div></div>',
         esc(conv_attr), esc(tolower(nm)), esc(nm), conv_badges,
         if (!is.null(entry_points_df)) "called from R, but not defined in src/ (registered under another name, generated, or defined in a dependency)"
         else "no record in functions.csv (likely the entry point itself was filtered)"))
@@ -2267,16 +2355,19 @@ write_package_page <- function(pkg) {
     '  document.querySelectorAll("input[data-status-box]").forEach(b => { stat[b.dataset.statusBox] = b; });',
     '  const changedOnly = document.getElementById("flt-changed"); // null when no baseline',
     '  const emptyOnly = document.getElementById("flt-empty");',
+    '  const anyOnly = document.getElementById("flt-any");',
     '  const nameInput = document.getElementById("flt-name");',
     '  const unboundChip = document.getElementById("flt-unbound");',
     '  const cards = document.querySelectorAll(".func-list[data-status]");',
     '  const groups = document.querySelectorAll(".file-group, section[data-section]");',
     '  const counter = document.getElementById("flt-count");',
     '  const radio = name => { const r = document.querySelector(`input[name="${name}"]:checked`); return r ? r.value : null; };',
-    '  // #empty: empty returns only. #unbound: blocked by a prelude gap;',
+    '  // #empty: empty returns only. #any: a parameter typed any only.',
+    '  // #unbound: blocked by a prelude gap;',
     '  // #unbound=<name>: blocked by that name (links from the index page).',
     '  let unbound = null;',
     '  if (location.hash === "#empty" && emptyOnly) emptyOnly.checked = true;',
+    '  if (location.hash === "#any" && anyOnly) anyOnly.checked = true;',
     '  if (location.hash.startsWith("#unbound")) {',
     '    const eq = location.hash.indexOf("=");',
     '    unbound = { name: eq < 0 ? null : decodeURIComponent(location.hash.slice(eq + 1)) };',
@@ -2308,6 +2399,7 @@ write_package_page <- function(pkg) {
     '    const epOnly = ep && ep.checked;',
     '    const wantChanged = changedOnly && changedOnly.checked;',
     '    const wantEmpty = emptyOnly && emptyOnly.checked;',
+    '    const wantAny = anyOnly && anyOnly.checked;',
     '    const q = (nameInput.value || "").toLowerCase();',
     '    let visible = 0;',
     '    cards.forEach(c => {',
@@ -2319,13 +2411,14 @@ write_package_page <- function(pkg) {
     '      const okStat = !box || box.checked;',
     '      const okChanged = !wantChanged || c.dataset.changed === "true";',
     '      const okEmpty = !wantEmpty || c.dataset.emptyRet === "true";',
+    '      const okAny = !wantAny || c.dataset.anyArg === "true";',
     '      const okUnbound = !unbound || (unbound.name ? c.dataset.unbound === unbound.name : c.dataset.unboundKind === "prelude");',
     '      const okName = !q || c.dataset.name.indexOf(q) !== -1;',
     if (has_fuzz) c(
     '      const okFuzz = (!fuzzOnly.checked || ["unsound", "accepts", "crash"].includes(c.dataset.fuzz)) &&',
     '        (!fuzzName || (c.dataset.name === fuzzName && c.dataset.fuzz));',
-    '      const show = okSide && okEp && okStat && okChanged && okEmpty && okUnbound && okName && okFuzz;')
-    else '      const show = okSide && okEp && okStat && okChanged && okEmpty && okUnbound && okName;',
+    '      const show = okSide && okEp && okStat && okChanged && okEmpty && okAny && okUnbound && okName && okFuzz;')
+    else '      const show = okSide && okEp && okStat && okChanged && okEmpty && okAny && okUnbound && okName;',
     '      c.style.display = show ? "" : "none";',
     '      if (show) visible++;',
     '    });',

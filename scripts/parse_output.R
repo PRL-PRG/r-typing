@@ -81,6 +81,14 @@ read_report <- function(path) {
 fld <- function(df, name, default = NA) {
   if (!is.null(df) && name %in% names(df)) df[[name]] else rep(default, NROW(df))
 }
+
+# Whether a definition has a parameter typed `any`, from TypR's `any_args`:
+# the parameters, `;`-joined ("" for none). NA for a report that predates the
+# field.
+any_arg_of <- function(df) {
+  a <- fld(df, "any_args", NA_character_)
+  ifelse(is.na(a), NA, nzchar(a))
+}
 nrec <- function(df) NROW(df)
 
 # Paths relative to the package root, as the dashboard and ctags see them.
@@ -145,6 +153,7 @@ native_summary <- function(rep) {
       n_from_c_sig = sum(status == "fallback"),
       n_internal   = sum(status == "internal"),
       n_empty_ret  = sum(status == "typed" & fld(fn, "degenerate", FALSE), na.rm = TRUE),
+      n_any_args   = sum(status == "typed" & any_arg_of(fn), na.rm = TRUE),
       n_c_files    = fld(rep$run, "n_c_files", NA_integer_)[1L]
     ),
     timing_stats(fld(fn, "elapsed_sec", NA_real_)),
@@ -191,6 +200,7 @@ r_summary <- function(rep, prefix) {
     n_unbound_native  = sum(unbound == "native", na.rm = TRUE),
     n_other_err      = sum(status == "untypeable" & is.na(unbound)),
     n_empty_ret      = sum(status == "typed" & fld(rd, "degenerate", FALSE), na.rm = TRUE),
+    n_any_args       = sum(status == "typed" & any_arg_of(rd), na.rm = TRUE),
     n_annotated      = sum(fld(rd, "annotated", FALSE), na.rm = TRUE),
     n_files          = nrec(files),
     n_files_unparsed = sum(!fld(files, "parsed", TRUE), na.rm = TRUE),
@@ -227,6 +237,7 @@ crash_message <- function(rep, exit_code, out_path) {
 
 FUNCTION_COLS <- c("package", "function_name", "status", "type_sig", "error_title",
   "error_detail", "timing_sec", "side", "mode", "file", "line", "col", "degenerate",
+  "any_arg", "any_args",
   "is_entry_point", "convention", "annotated", "anonymous", "error_name",
   "unbound_kind", "error_line", "natives", "calls")
 
@@ -239,6 +250,7 @@ native_rows <- function(pkg, rep, root) {
     error_detail = fld(fn, "error_detail"), timing_sec = fld(fn, "elapsed_sec"),
     side = "native", mode = "strict", file = rel_path(fld(fn, "file"), root),
     line = fld(fn, "line"), col = fld(fn, "col"), degenerate = fld(fn, "degenerate"),
+    any_arg = any_arg_of(fn), any_args = fld(fn, "any_args", NA_character_),
     is_entry_point = fld(fn, "is_entry_point"), convention = fld(fn, "convention"),
     annotated = NA, anonymous = FALSE, error_name = NA, unbound_kind = NA,
     error_line = NA, natives = NA, calls = fld(fn, "calls"),
@@ -257,6 +269,7 @@ r_rows <- function(pkg, rep, root, mode) {
     timing_sec = fld(rd, "elapsed_sec"),
     side = "r", mode = mode, file = rel_path(fld(rd, "file"), root),
     line = fld(rd, "line"), col = fld(rd, "col"), degenerate = fld(rd, "degenerate"),
+    any_arg = any_arg_of(rd), any_args = fld(rd, "any_args", NA_character_),
     is_entry_point = NA, convention = NA, annotated = fld(rd, "annotated"),
     anonymous = fld(rd, "anonymous"), error_name = fld(rd, "error_name"),
     unbound_kind = fld(rd, "unbound_kind"), error_line = fld(rd, "error_line"),

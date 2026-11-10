@@ -250,18 +250,38 @@ read_all_lines <- function(path) {
 }
 # The four commits a TypR checker was built from (see
 # record_checker_version.sh). NULL for a NativeSem-era results dir.
-read_provenance <- function(dir) {
-  path <- file.path(dir, "provenance.json")
+read_json_file <- function(path) {
   if (!file.exists(path) || !requireNamespace("jsonlite", quietly = TRUE)) return(NULL)
   tryCatch(jsonlite::fromJSON(path), error = function(e) NULL)
 }
+read_provenance <- function(dir) read_json_file(file.path(dir, "provenance.json"))
 load_checker_meta <- function(dir) {
   list(
     version = read_one_line(file.path(dir, "checker_version.txt")),
     subject = read_one_line(file.path(dir, "checker_subject.txt")),
     status  = read_all_lines(file.path(dir, "checker_status.txt")),
-    prov    = read_provenance(dir)
+    prov    = read_provenance(dir),
+    runner  = read_json_file(file.path(dir, "runner.json"))
   )
+}
+# The GitHub Actions run and its runner's CPU (record_runner.sh), as
+# " · CI run #238 · AMD EPYC 7763 ...". Empty when runner.json is missing.
+run_html <- function(meta) {
+  r <- meta$runner
+  if (is.null(r)) return("")
+  str <- function(x) if (is.null(x) || length(x) != 1L || is.na(x) || !nzchar(x)) NA_character_ else as.character(x)
+  url <- str(r$run_url); num <- str(r$run_number); cpu <- str(r$cpu_model)
+  label <- if (!is.na(num)) sprintf("CI run #%s", esc(num)) else "CI run"
+  parts <- c(
+    if (!is.na(url)) sprintf('<a href="%s">%s</a>', esc(url), label),
+    if (!is.na(cpu) && cpu != "unknown") {
+      mem <- suppressWarnings(as.numeric(str(r$mem_total_kb)))
+      tip <- paste(c(if (!is.na(str(r$nproc))) sprintf("%s cores", esc(r$nproc)),
+                     if (!is.na(mem)) sprintf("%.0f GB", mem / 1024^2)), collapse = ", ")
+      sprintf('<span title="the runner&#39;s CPU%s: timings depend on it">%s</span>',
+              if (nzchar(tip)) paste0(" (", tip, ")") else "", esc(cpu))
+    })
+  if (length(parts) == 0L) "" else paste0(" &middot; ", paste(parts, collapse = " &middot; "))
 }
 checker_meta  <- load_checker_meta(results_dir)
 b_checker_meta <- if (!is.null(baseline_dir)) load_checker_meta(baseline_dir) else NULL
@@ -1235,7 +1255,7 @@ h('<h1><span class="r">R</span> we type yet?</h1>')
 h(sprintf('<p class="subtitle">%s for %d CRAN packages &mdash; generated %s%s</p>',
   if (HAVE_R) 'TypR results (Rsem on the R code, NativeSem on the C code)' else 'Type-checking results',
   n_packages, format(Sys.time(), "%Y-%m-%d %H:%M"),
-  checker_version_html()))
+  paste0(run_html(checker_meta), checker_version_html())))
 # The previous dashboard, deployed next to this one by CI (DASHBOARD_PREV_URL,
 # e.g. prev/index.html). It is the baseline of the changes shown here. The
 # line is one element with its own class: CI deletes it from the copied
@@ -1246,7 +1266,7 @@ if (nzchar(prev_url) && !is.null(baseline_dir)) {
   when <- if (!is.null(built) && !is.na(built) && nzchar(built))
     sprintf(' (built %s)', esc(sub("T", " ", sub("Z$", " UTC", built)))) else ""
   h(sprintf('<p class="subtitle prev-run"><a href="%s">Previous run</a>%s%s &mdash; the baseline of the changes below</p>',
-    esc(prev_url), when, checker_version_html(b_checker_meta)))
+    esc(prev_url), when, paste0(run_html(b_checker_meta), checker_version_html(b_checker_meta))))
 }
 h(checker_status_html())
 

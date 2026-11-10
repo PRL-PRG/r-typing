@@ -515,9 +515,10 @@ if (any(dir.exists(fuzz_dir(packages)))) {
   unlink(fuzz_files)
 }
 
-# Carry the checker-version snapshot from work/ into results/ so it survives
-# results.prev/ promotion and CI artifact upload.
-for (f in c("provenance.json", "checker_version.txt", "checker_status.txt", "checker_subject.txt")) {
+# Carry the checker-version and runner snapshots from work/ into results/ so
+# they survive results.prev/ promotion and CI artifact upload.
+for (f in c("provenance.json", "checker_version.txt", "checker_status.txt", "checker_subject.txt",
+            "runner.json")) {
   src <- file.path(dirname(raw_dir), f)
   if (file.exists(src)) file.copy(src, file.path(results_dir, f), overwrite = TRUE)
 }

@@ -125,6 +125,7 @@ endif
 work/.typecheck_done: work/.extract_done $(CHECKER)
 	@mkdir -p work/raw_output
 	@bash scripts/record_checker_version.sh "$(CHECKER_DIR)" work
+	@bash scripts/record_runner.sh work
 	find work/sources -mindepth 1 -maxdepth 1 -type d \
 		| parallel -j$(NPROC) --timeout $(TIMEOUT) --memfree $(MEMFREE) --retries $(RETRIES) \
 			--joblog work/typecheck.joblog --bar \

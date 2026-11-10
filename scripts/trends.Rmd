@@ -13,6 +13,9 @@ params:
   cache_dir: "work/artifacts"
   top_n_packages: 24
   top_n_categories: 8
+  # First day of the performance plots: R-side timings start on 2026-10-23,
+  # with TypR, and the native ones before are sparse.
+  perf_since: "2026-10-15"
   # Where a repository_dispatch run came from, by event type: TypR now, the
   # NativeSem repository for runs before the migration.
   upstream_repo: "PRL-PRG/tyr"
@@ -113,6 +116,11 @@ read_run <- function(rid, ts, run_no, sha, branch, title, event) {
   s$run_id <- rid; s$run_no <- run_no; s$ts <- ts
   s$sha <- sha; s$branch <- branch
   s$commit_title <- title; s$event <- event
+  # The runner's CPU (scripts/record_runner.sh); runs before it was recorded
+  # have none.
+  r_path <- find_csv(base, "runner.json")
+  s$cpu_model <- if (is.na(r_path)) NA_character_ else
+    tryCatch(fromJSON(r_path)$cpu_model, error = function(e) NA_character_)
 
   f_path <- find_csv(base, "functions.csv")
   f <- if (!is.na(f_path)) {
@@ -305,6 +313,122 @@ ggplot(totals, aes(ts, pct_ep)) +
        title = "Native: entry-point typing rate (.Call/.C/.External/Fortran)")
 ```
 
+## Performance: time to type a function
+
+Each run is compared with the previous one. The plot shows the median ratio of
+a function's typing time, over the functions typed in both runs: native ones,
+and R ones in strict mode. A plain median per run would compare two different
+sets of functions whenever a change makes functions start or stop typing.
+Functions that take less than 0.01 s in both
+runs are left out, because timer noise dominates at that scale. Below 1, the
+run is faster than the previous one. Its shape says whether the runner's CPU
+model changed since the previous run: across a change, the ratio mostly
+measures the machine. Runs before `r params$perf_since` are
+left out of the performance plots (parameter `perf_since`).
+
+```{r time-ratios}
+# Same matching key as the dashboard (generate_webpage.R): package, side,
+# file, name, occurrence, mode. `file` only takes part when both runs record it.
+ratio_floor <- 0.01
+SEP <- "\x1f"
+function_keys <- function(df, use_file) {
+  file <- if (use_file) ifelse(is.na(df$file), "", df$file) else ""
+  stem <- paste(df$package, df$side, file, df$function_name, sep = SEP)
+  occurrence <- ave(seq_along(stem), stem, df$mode, FUN = seq_along)
+  paste(stem, occurrence, df$mode, sep = SEP)
+}
+if (!"file" %in% names(functions_all)) functions_all$file <- NA_character_
+typed_times <- functions_all %>%
+  filter(status == "typed", !is.na(timing_sec), side == "native" | mode == "strict") %>%
+  select(run_no, package, side, mode, file, function_name, timing_sec)
+by_run <- split(typed_times, typed_times$run_no)
+
+run_order <- summary_all %>% distinct(run_no, ts) %>% arrange(ts)
+pairs <- data.frame(run_no = run_order$run_no[-1],
+                    ts = run_order$ts[-1],
+                    prev = run_order$run_no[-nrow(run_order)])
+run_cpu <- summary_all %>% group_by(run_no) %>%
+  summarise(cpu_model = cpu_model[!is.na(cpu_model)][1], .groups = "drop")
+cpu_of <- setNames(run_cpu$cpu_model, run_cpu$run_no)
+pairs$cpu <- with(pairs, {
+  now <- cpu_of[as.character(run_no)]; before <- cpu_of[as.character(prev)]
+  ifelse(is.na(now) | is.na(before), "not recorded",
+         ifelse(now == before, "same CPU", "CPU changed"))
+})
+ratios <- bind_rows(Map(function(now_no, ts, prev_no) {
+  now <- by_run[[as.character(now_no)]]
+  before <- by_run[[as.character(prev_no)]]
+  if (is.null(now) || is.null(before)) return(NULL)
+  use_file <- any(!is.na(now$file)) && any(!is.na(before$file))
+  now$key <- function_keys(now, use_file)
+  before$key <- function_keys(before, use_file)
+  m <- inner_join(now, before %>% select(key, timing_before = timing_sec), by = "key") %>%
+    filter(pmax(timing_sec, timing_before) >= ratio_floor, timing_before > 0)
+  if (nrow(m) == 0L) return(NULL)
+  data.frame(run_no = now_no, ts = ts, package = m$package, side = m$side,
+             ratio = m$timing_sec / m$timing_before)
+}, pairs$run_no, pairs$ts, pairs$prev))
+perf_since <- as.POSIXct(params$perf_since, tz = "UTC")
+if (nrow(ratios) > 0) ratios <- ratios %>% filter(ts >= perf_since)
+
+if (nrow(ratios) > 0) {
+  ratio_totals <- bind_rows(
+    ratios %>% mutate(what = "all"),
+    ratios %>% mutate(what = ifelse(side == "native", "native", "R strict"))) %>%
+    group_by(ts, run_no, what) %>%
+    summarise(median_ratio = median(ratio), n = n(), .groups = "drop") %>%
+    left_join(pairs %>% select(run_no, cpu), by = "run_no")
+  ggplot(ratio_totals, aes(ts, median_ratio, color = what)) +
+    geom_hline(yintercept = 1, color = "grey60") +
+    geom_line(linewidth = 0.6) + geom_point(aes(size = n, shape = cpu)) +
+    scale_y_log10() + scale_size_area(max_size = 3) +
+    scale_shape_manual(values = c("same CPU" = 16, "CPU changed" = 4, "not recorded" = 1)) +
+    labs(x = NULL, y = "Median time ratio vs. previous run (log)", color = NULL,
+         size = "functions compared", shape = "runner",
+         title = "Time to type a function, relative to the previous run")
+}
+```
+
+```{r time-ratios-pkg, fig.height=10}
+if (nrow(ratios) > 0) {
+  ratios %>%
+    group_by(ts, package) %>%
+    summarise(median_ratio = median(ratio), .groups = "drop") %>%
+    ggplot(aes(ts, median_ratio)) +
+    geom_hline(yintercept = 1, color = "grey60") +
+    geom_line(linewidth = 0.4) + geom_point(size = 0.6) +
+    facet_wrap(~ package) + scale_y_log10() +
+    labs(x = NULL, y = "Median time ratio vs. previous run (log)",
+         title = "Time to type a function, relative to the previous run, per package")
+}
+```
+
+## Performance: total time per run
+
+The sum over packages of the time each package took (`elapsed_sec`), and the
+total typing time of all functions, by side and mode, whether they typed or
+not. Packages run in parallel, so this is not the wall time of the CI job.
+The shape of the points is the runner's CPU model.
+
+```{r total-time}
+time_totals <- bind_rows(
+  summary_all %>% group_by(ts, run_no) %>%
+    summarise(sec = sum(elapsed_sec, na.rm = TRUE), .groups = "drop") %>%
+    mutate(what = "package runs (elapsed)"),
+  functions_all %>%
+    mutate(what = ifelse(side == "native", "typing: native", paste("typing: R", mode))) %>%
+    group_by(ts, run_no, what) %>%
+    summarise(sec = sum(timing_sec, na.rm = TRUE), .groups = "drop")) %>%
+  filter(sec > 0, ts >= perf_since) %>%
+  left_join(run_cpu, by = "run_no") %>%
+  mutate(cpu_model = coalesce(cpu_model, "not recorded"))
+
+ggplot(time_totals, aes(ts, sec, color = what)) +
+  geom_line(linewidth = 0.6) + geom_point(aes(shape = cpu_model), size = 1.5) +
+  labs(x = NULL, y = "Seconds", color = NULL, shape = "runner CPU",
+       title = "Total time per run (sum over packages)")
+```
+
 ## Run-by-run summary
 
 One row per CI run: commit subject, total analyzed native functions, % typed,
@@ -341,6 +465,7 @@ errs_wide <- errs_for_table %>%
 
 run_table <- run_totals %>%
   left_join(errs_wide, by = "run_no") %>%
+  left_join(run_cpu %>% rename(runner_cpu = cpu_model), by = "run_no") %>%
   arrange(desc(ts)) %>%
   mutate(
     date      = format(ts, "%Y-%m-%d %H:%M"),
@@ -348,7 +473,7 @@ run_table <- run_totals %>%
   ) %>%
   select(n_analyzed, pct_typed, commit_title,
          run_no, date, branch,
-         any_of(c(top_cats_tbl, "(other)")))
+         any_of(c(top_cats_tbl, "(other)")), runner_cpu)
 
 # Replace NA error counts (runs that predate a category or had zero of it)
 # with 0 — a blank cell is harder to read than an explicit zero.

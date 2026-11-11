@@ -6,7 +6,7 @@ Every package is checked twice: **strict** reports every name tyr cannot resolve
 
 ## Prerequisites
 
-- **tyr** built (`make build` from its checkout). By default the pipeline uses a sibling checkout's build tree, `../tyr/_build/default`, which holds `bin/main.exe`, `types/` and `prelude/` side by side. Point `TYR_DIR` at another checkout, or `CHECKER_DIR`/`CHECKER` at another build. In CI all of this comes from the `ghcr.io/prl-prg/typr` image.
+- **tyr** built (`make build` from its checkout). By default the pipeline uses a sibling checkout's build tree, `../tyr/_build/default`, which holds `bin/main.exe`, `types/` and `prelude/` side by side. Point `TYR_DIR` at another checkout, or `CHECKER_DIR`/`CHECKER` at another build. In CI all of this comes from the `ghcr.io/prl-prg/tyr` image.
 - **tree-sitter** shared library — its directory is passed via `TS_LIB_DIR` and appended to `LD_LIBRARY_PATH` when invoking the checker.
 - **R** with the **jsonlite** package (`parse_output.R` reads tyr's JSONL reports with it); otherwise only the built-in `parallel` and `utils` packages.
 - **GNU parallel** — drives `make typecheck`.
@@ -92,14 +92,14 @@ The packages must be installed (`make install`, a prerequisite of `make typechec
 
   ```bash
   docker run --rm --cap-add SYS_ADMIN --security-opt seccomp=unconfined \
-      --security-opt apparmor=unconfined -v $PWD:/rt -w /rt ghcr.io/prl-prg/typr \
+      --security-opt apparmor=unconfined -v $PWD:/rt -w /rt ghcr.io/prl-prg/tyr \
       make FUZZ=1
   ```
 
 - `FUZZ_SANDBOX=none FUZZ_UNSAFE=1`: no sandbox; the container is the boundary. Install with network, then take the network away from the container before fuzzing:
 
   ```bash
-  docker run -d --name rt-fuzz -v $PWD:/rt -w /rt ghcr.io/prl-prg/typr sleep infinity
+  docker run -d --name rt-fuzz -v $PWD:/rt -w /rt ghcr.io/prl-prg/tyr sleep infinity
   docker exec rt-fuzz make install
   docker network disconnect bridge rt-fuzz
   docker exec rt-fuzz make FUZZ=1 FUZZ_SANDBOX=none FUZZ_UNSAFE=1
@@ -124,7 +124,7 @@ In CI, fuzzing is on: every run of the *Pipeline* workflow fuzzes, whether start
 
 - `fuzz` (on by default): installs the packages and runs with `FUZZ=1`. With bwrap, the job's container gets the privileges above (plus `--security-opt systempaths=unconfined`, for a fresh `/proc`), and a first step checks that bwrap works before the install.
 - `sandbox`: `bwrap` (default) or `none`. With `none`, the runner is the boundary: a VM thrown away after the job, which keeps only the artifacts it uploads.
-- `image`: the tyr image, `ghcr.io/prl-prg/typr:latest` by default. A push to a tyr branch named `fuzz` builds `ghcr.io/prl-prg/typr:fuzz`, to try a tyr change on the dashboard before merging it.
+- `image`: the tyr image, `ghcr.io/prl-prg/tyr:latest` by default. A push to a tyr branch named `fuzz` builds `ghcr.io/prl-prg/tyr:fuzz`, to try a tyr change on the dashboard before merging it.
 
 ```bash
 gh workflow run ci.yml --ref main -f fuzz=false   # a run without fuzzing

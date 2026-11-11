@@ -164,8 +164,8 @@ functions_all$side[is.na(functions_all$side)] <- "native"
 functions_all$mode[is.na(functions_all$mode)] <- "strict"
 
 # Runs triggered by repository_dispatch carry the event type as displayTitle:
-# "typr-updated" (fired by tyr) or "r-c-typing-updated" (fired by NativeSem
-# before the migration). Resolve them to the upstream commit subject by
+# "tyr-updated" (fired by tyr; "typr-updated" before its rename) or
+# "r-c-typing-updated" (fired by NativeSem before the migration). Resolve them to the upstream commit subject by
 # matching the run's start time to the most recent main-branch commit on the
 # repository that fired it.
 fetch_upstream_commits <- function(repo) {
@@ -191,8 +191,10 @@ load_upstream_commits <- function(repo) {
   if (!is.null(commits)) write(jsonlite::toJSON(commits, auto_unbox = TRUE), path)
   commits
 }
+tyr_commits <- load_upstream_commits(params$upstream_repo)
 upstream_commits <- list(
-  "typr-updated"       = load_upstream_commits(params$upstream_repo),
+  "tyr-updated"        = tyr_commits,
+  "typr-updated"       = tyr_commits,
   "r-c-typing-updated" = load_upstream_commits(params$legacy_upstream_repo))
 
 upstream_subject <- function(at_ts, event_type) {

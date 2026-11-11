@@ -4,8 +4,8 @@ on:
   push:
     branches: [main]
   repository_dispatch:
-    # typr-updated: a new tyr image (dispatched by PRL-PRG/tyr).
-    types: [typr-updated]
+    # tyr-updated: a new tyr image (dispatched by PRL-PRG/tyr).
+    types: [tyr-updated]
   workflow_dispatch:
     inputs:
       fuzz:
@@ -18,7 +18,7 @@ on:
         options: [bwrap, none]
         default: bwrap
       image:
-        description: "tyr image to run (default ghcr.io/prl-prg/typr:latest)"
+        description: "tyr image to run (default ghcr.io/prl-prg/tyr:latest)"
         type: string
         default: ""
 
@@ -44,7 +44,7 @@ jobs:
     # to create namespaces and mount (scripts/fuzz_sandbox.sh);
     # systempaths=unconfined lets it mount a fresh /proc.
     container:
-      image: ${{ inputs.image || 'ghcr.io/prl-prg/typr:latest' }}
+      image: ${{ inputs.image || 'ghcr.io/prl-prg/tyr:latest' }}
       options: ${{ (github.event_name != 'workflow_dispatch' || inputs.fuzz) && inputs.sandbox != 'none' && '--cap-add SYS_ADMIN --security-opt seccomp=unconfined --security-opt apparmor=unconfined --security-opt systempaths=unconfined' || '' }}
     # The image sets no locale, so R runs in the POSIX one and write.csv
     # escapes every non-ASCII character of the UTF-8 strings jsonlite reads

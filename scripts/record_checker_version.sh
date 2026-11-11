@@ -3,7 +3,7 @@
 # Usage: record_checker_version.sh <checker_dir> <out_dir>
 #
 # Writes under <out_dir>:
-#   provenance.json      — {typr, rsem, nativesem, rstt, pinned, subject,
+#   provenance.json      — {tyr, rsem, nativesem, rstt, pinned, subject,
 #                          built_at}: the four commits the checker was built
 #                          from, and whether the submodules were at the
 #                          commits tyr pins
@@ -39,7 +39,8 @@ echo "unknown" > "$ver_file"
 
 if [ -f "$CHECKER_DIR/provenance.json" ]; then
     cp "$CHECKER_DIR/provenance.json" "$prov_file"
-    sha=$(sed -n 's/.*"typr" *: *"\([0-9a-f]*\)".*/\1/p' "$prov_file" | cut -c1-8)
+    # Images built before tyr's rename record its commit under "typr".
+    sha=$(sed -n 's/.*"typ\{0,1\}r" *: *"\([0-9a-f]*\)".*/\1/p' "$prov_file" | cut -c1-8)
     [ -n "$sha" ] && printf '%s\n' "$sha" > "$ver_file"
     exit 0
 fi
@@ -73,5 +74,5 @@ sub_sha() {
 rsem=$(sub_sha Rsem)
 nativesem=$(sub_sha nativesem)
 rstt=$(sub_sha rstt)
-printf '{"typr":"%s","rsem":"%s","nativesem":"%s","rstt":"%s","pinned":%s,"subject":"local","built_at":null}\n' \
+printf '{"tyr":"%s","rsem":"%s","nativesem":"%s","rstt":"%s","pinned":%s,"subject":"local","built_at":null}\n' \
     "$(git -C "$top" rev-parse HEAD)" "$rsem" "$nativesem" "$rstt" "$pinned" > "$prov_file"

@@ -254,7 +254,12 @@ read_json_file <- function(path) {
   if (!file.exists(path) || !requireNamespace("jsonlite", quietly = TRUE)) return(NULL)
   tryCatch(jsonlite::fromJSON(path), error = function(e) NULL)
 }
-read_provenance <- function(dir) read_json_file(file.path(dir, "provenance.json"))
+# Images built before tyr's rename record its commit under "typr".
+read_provenance <- function(dir) {
+  p <- read_json_file(file.path(dir, "provenance.json"))
+  if (!is.null(p) && is.null(p$tyr) && !is.null(p$typr)) p$tyr <- p$typr
+  p
+}
 load_checker_meta <- function(dir) {
   list(
     version = read_one_line(file.path(dir, "checker_version.txt")),
@@ -642,9 +647,9 @@ change_info <- function(now, before) {
 
 # Inline checker version (e.g. `fa6d98c0-dirty`). Renders nothing when the
 # version file is missing (older results regenerated after the fact).
-PROV_REPOS <- c(typr = "PRL-PRG/tyr", rsem = "E-Sh4rk/Rsem",
+PROV_REPOS <- c(tyr = "PRL-PRG/tyr", rsem = "E-Sh4rk/Rsem",
                 nativesem = "programLyrique/nativesem", rstt = "E-Sh4rk/rstt")
-PROV_LABELS <- c(typr = "tyr", rsem = "Rsem", nativesem = "NativeSem", rstt = "rstt")
+PROV_LABELS <- c(tyr = "tyr", rsem = "Rsem", nativesem = "NativeSem", rstt = "rstt")
 
 # tyr: the four commits, each linked, and whether the submodules were the
 # ones tyr pins. Otherwise the inline checker version (e.g.

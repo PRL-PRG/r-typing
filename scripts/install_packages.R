@@ -6,7 +6,7 @@
 # Usage: Rscript install_packages.R [TARBALLS_DIR] [LIBRARY]
 #
 # Their dependencies (Depends, Imports, LinkingTo) come from CRAN: as
-# binaries through bspm when it is installed (the TypR image has it, with
+# binaries through bspm when it is installed (the tyr image has it, with
 # r2u), into the system library; otherwise built from source into LIBRARY.
 # Building from source needs the headers of the system libraries a package
 # links to, which r2u's binaries do not bring: when the build fails, with

@@ -6,15 +6,15 @@
 #   provenance.json      — {typr, rsem, nativesem, rstt, pinned, subject,
 #                          built_at}: the four commits the checker was built
 #                          from, and whether the submodules were at the
-#                          commits typr pins
-#   checker_version.txt  — short typr SHA, with "-dirty" suffix if the worktree
+#                          commits tyr pins
+#   checker_version.txt  — short tyr SHA, with "-dirty" suffix if the worktree
 #                          has any modified tracked files OR untracked files
 #   checker_status.txt   — `git status --short` (empty when clean)
 #   checker_subject.txt  — subject of HEAD commit
 #
-# In the TypR image, /checker is not a git repository: provenance.json was
+# In the tyr image, /checker is not a git repository: provenance.json was
 # written when the image was built and is copied as is. Locally the checker
-# directory lies inside a typr checkout, and the same file is derived from git.
+# directory lies inside a tyr checkout, and the same file is derived from git.
 #
 # All files are always created (empty/"unknown" on failure) so downstream
 # steps don't have to special-case missing files.
@@ -60,7 +60,7 @@ fi
 printf '%s' "$status" > "$status_file"
 printf '%s\n' "$subject" > "$subject_file"
 
-# The checked-out commit of each submodule, and whether it is the one typr
+# The checked-out commit of each submodule, and whether it is the one tyr
 # records. Empty when the submodule is missing.
 pinned=true
 sub_sha() {

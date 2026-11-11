@@ -37,7 +37,7 @@ crashes_df   <- read.csv(file.path(results_dir, "crashes.csv"),  stringsAsFactor
 b_summary_df   <- if (!is.null(baseline_dir)) read.csv(file.path(baseline_dir, "summary.csv"),  stringsAsFactors = FALSE) else NULL
 b_functions_df <- if (!is.null(baseline_dir)) read.csv(file.path(baseline_dir, "functions.csv"), stringsAsFactors = FALSE) else NULL
 
-# Written by the TypR-era parser only; NULL for a NativeSem-era results dir.
+# Written by the tyr-era parser only; NULL for a NativeSem-era results dir.
 read_opt_csv <- function(dir, name) {
   path <- file.path(dir, name)
   if (file.exists(path)) read.csv(path, stringsAsFactors = FALSE) else NULL
@@ -50,7 +50,7 @@ fuzz_samples_df <- read_opt_csv(results_dir, "fuzz_samples.csv")
 
 # --- Column aliases ---
 # The CSV schema grows additively. NativeSem-era runs carry only the native
-# columns; TypR runs keep those names (still meaning native) and add r_*
+# columns; tyr runs keep those names (still meaning native) and add r_*
 # (strict) and rg_* (gradual) columns beside them, plus side/mode on
 # functions.csv. Everything below reads through these aliases, so one script
 # renders either kind of results dir, against a baseline of either kind.
@@ -75,7 +75,7 @@ native_cols <- function(df) {
     ep         = if (!is.null(df) && "n_ep" %in% names(df)) df$n_ep
                  else ep_call + ep_c + ep_fortran + ep_external,
     ep_typed   = getcol(df, "n_ep_typed", 0L),
-    # TypR-era only (NA before).
+    # tyr-era only (NA before).
     ep_reached = getcol(df, "n_ep_reached", NA_integer_),
     ep_linked  = getcol(df, "n_ep_linked", NA_integer_),
     from_c_sig = getcol(df, "n_from_c_sig", NA_integer_),
@@ -103,7 +103,7 @@ r_cols <- function(df) {
   )
 }
 
-# Every pre-TypR function row is a native function from the one (strict) run.
+# Every pre-tyr function row is a native function from the one (strict) run.
 # `degenerate` (result type is `empty`) is NA there: it is then recomputed
 # from the type string, which only works for native types.
 backfill_functions <- function(df) {
@@ -151,7 +151,7 @@ if (HAVE_FUZZ && is.null(fuzz_samples_df))
 # Baseline matching key: package, side, file, name, occurrence, mode.
 # `occurrence` numbers repeated rows in order within a mode (R files hold many
 # anonymous statements). `file` only takes part when both runs record it, so
-# a NativeSem-era baseline still matches a TypR run. Mode comes last, so a
+# a NativeSem-era baseline still matches a tyr run. Mode comes last, so a
 # strict key turns into its gradual twin by replacing the suffix.
 SEP <- "\x1f"
 use_file_key <- !is.null(b_functions_df) &&
@@ -167,7 +167,7 @@ gradual_key <- function(key) sub(paste0(SEP, "strict$"), paste0(SEP, "gradual"),
 functions_df$key <- function_keys(functions_df)
 if (!is.null(b_functions_df)) b_functions_df$key <- function_keys(b_functions_df)
 
-# Which C functions are analysed is not fixed: TypR keeps those the entry
+# Which C functions are analysed is not fixed: tyr keeps those the entry
 # points reach, and all of them when it finds no entry point (e.g. the R side
 # did not parse). Raw typed counts would then credit or blame functions for
 # entering or leaving the count, so native deltas are taken over the functions
@@ -248,7 +248,7 @@ read_all_lines <- function(path) {
   if (!file.exists(path)) return(character())
   tryCatch(readLines(path, warn = FALSE), error = function(e) character())
 }
-# The four commits a TypR checker was built from (see
+# The four commits a tyr checker was built from (see
 # record_checker_version.sh). NULL for a NativeSem-era results dir.
 read_json_file <- function(path) {
   if (!file.exists(path) || !requireNamespace("jsonlite", quietly = TRUE)) return(NULL)
@@ -295,7 +295,8 @@ prism_assets <- c(
   "prism-core.min.js",
   "prism-clike.min.js",
   "prism-c.min.js",
-  "prism-r.min.js"
+  "prism-r.min.js",
+  "tyr-logo.svg"  # tyr's logo (docs/logo.svg there), in the page headers
 )
 for (f in prism_assets) {
   src <- file.path("assets", f)
@@ -308,6 +309,9 @@ for (f in prism_assets) {
 
 # Asset reference helpers; prefix is "" for index, "../" for per-package pages.
 prism_head <- function(prefix = "") sprintf('<link rel="stylesheet" href="%sassets/prism.css">', prefix)
+# tyr's logo, linked to its repository, at the start of a page's title.
+tyr_logo <- function(prefix = "")
+  sprintf('<a class="tyr-logo" href="https://github.com/PRL-PRG/tyr" title="tyr, the type checker"><img src="%sassets/tyr-logo.svg" alt="tyr"></a>', prefix)
 prism_script <- function(prefix = "") {
   paste(sprintf(
     '<script src="%sassets/%s" defer></script>',
@@ -349,7 +353,7 @@ error_category_counts <- function(fdf, side = "native", mode = "strict") {
   ut <- fdf[fdf$status != "typed", ]
   if (nrow(ut) == 0) return(setNames(integer(0), character(0)))
   cat_label <- ifelse(ut$status == "timeout", "timeout",
-               ifelse(ut$status == "skipped", "skipped (TypR caught an exception)",
+               ifelse(ut$status == "skipped", "skipped (tyr caught an exception)",
                ifelse(ut$status == "unknown", "unrecognised failure (no type, no error block)",
                ifelse(is.na(ut$error_title), ut$status, ut$error_title))))
   tbl <- table(cat_label)
@@ -574,7 +578,7 @@ returns_only_empty <- function(sig) {
   rec(s0)
 }
 
-# Typed with an `empty` result. TypR computes it on the type itself
+# Typed with an `empty` result. tyr computes it on the type itself
 # (`degenerate`); older results only have the type string, and the parser
 # above, which only understands native types.
 is_empty_ret <- function(fdf) {
@@ -588,7 +592,7 @@ is_empty_ret <- function(fdf) {
 
 # --- "argument typed any" detection ---
 # A typed function with a parameter typed `any` in at least one of its arrows:
-# inference learned nothing about that argument. TypR computes it on the type
+# inference learned nothing about that argument. tyr computes it on the type
 # itself (`any_arg`, with the parameters in `any_args`: names on the R side,
 # 1-based positions on the native side). Older results only have the type
 # string, searched for an `any` parameter: `x: any` in an R signature (not
@@ -642,8 +646,8 @@ PROV_REPOS <- c(typr = "PRL-PRG/tyr", rsem = "E-Sh4rk/Rsem",
                 nativesem = "programLyrique/nativesem", rstt = "E-Sh4rk/rstt")
 PROV_LABELS <- c(typr = "tyr", rsem = "Rsem", nativesem = "NativeSem", rstt = "rstt")
 
-# TypR: the four commits, each linked, and whether the submodules were the
-# ones typr pins. Otherwise the inline checker version (e.g.
+# tyr: the four commits, each linked, and whether the submodules were the
+# ones tyr pins. Otherwise the inline checker version (e.g.
 # `fa6d98c0-dirty`), or nothing when the version file is missing (older
 # results regenerated after the fact).
 checker_version_html <- function(meta = checker_meta) {
@@ -656,9 +660,9 @@ checker_version_html <- function(meta = checker_meta) {
               PROV_LABELS[[k]], PROV_REPOS[[k]], esc(sha), esc(substr(sha, 1L, 7L)))
     }, character(1))
     dirty <- if (!is.na(meta$version) && endsWith(meta$version, "-dirty"))
-      ' <span class="badge badge-dirty" title="the typr checkout had uncommitted changes">dirty</span>' else ""
+      ' <span class="badge badge-dirty" title="the tyr checkout had uncommitted changes">dirty</span>' else ""
     pinned <- if (isTRUE(as.logical(prov$pinned)))
-      '<span class="badge badge-pinned" title="submodules at the commits typr pins: a reproducible build">pinned</span>'
+      '<span class="badge badge-pinned" title="submodules at the commits tyr pins: a reproducible build">pinned</span>'
     else
       '<span class="badge badge-unpinned" title="submodules refreshed to their branch tips before building">unpinned</span>'
     return(sprintf(' &middot; %s %s%s', paste(parts[nzchar(parts)], collapse = " &middot; "), pinned, dirty))
@@ -867,6 +871,7 @@ common_style <- function() {
     'h1 { font-size: 2rem; margin-bottom: .25rem; }',
     'h1 .r { color: var(--accent); }',
     'h1 a { color: inherit; text-decoration: none; }',
+    'h1 .tyr-logo img { height: 1.4em; vertical-align: -0.3em; margin-right: .6rem; }',
     '.subtitle { color: var(--muted); margin-bottom: 2rem; }',
     '.subtitle:has(+ .dirty-files) { margin-bottom: .25rem; }',
     '.subtitle code { font-family: "JetBrains Mono", monospace; font-size: .85rem; background: #f0f0f0; padding: .1em .35em; border-radius: 3px; color: var(--text); }',
@@ -1010,7 +1015,7 @@ common_style <- function() {
   )
 }
 
-# --- TypR presentation helpers ---
+# --- tyr presentation helpers ---
 
 tot <- function(x) sum(x, na.rm = TRUE)
 
@@ -1063,7 +1068,7 @@ funnel_panel <- function(title, stages) {
 }
 
 # Why a package with C code has no entry point. A call site in an R file that
-# did not parse is invisible to TypR, so say so rather than claim there is
+# did not parse is invisible to tyr, so say so rather than claim there is
 # none.
 no_ep_sentence <- function(unparsed) {
   calls <- '<code>.Call</code>/<code>.C</code>/<code>.Fortran</code>/<code>.External</code>'
@@ -1081,7 +1086,7 @@ funnel_html <- function(f) {
     funnel_stage("named top-level definitions", f$r_defs, f$r_defs),
     funnel_stage("not blocked by an unbound native symbol", f$r_defs - f$unbound_native, f$r_defs,
       if (f$unbound_native > 0) sprintf(
-        '%d definitions report <code>unbound variable</code> on a native symbol TypR could not bind &mdash; the native panel&rsquo;s loss, arriving here.',
+        '%d definitions report <code>unbound variable</code> on a native symbol tyr could not bind &mdash; the native panel&rsquo;s loss, arriving here.',
         as.integer(f$unbound_native)) else ""),
     funnel_stage("typed, gradual", f$rg_typed, f$r_defs),
     funnel_stage("typed, strict", f$r_typed, f$r_defs,
@@ -1089,7 +1094,7 @@ funnel_html <- function(f) {
                                  as.integer(f$prelude)) else "")))
   if (!isTRUE(f$has_c))
     return(sprintf('<div class="funnel single">%s</div>', r_panel))
-  # With no entry point to start from, TypR types every C function instead.
+  # With no entry point to start from, tyr types every C function instead.
   native <- if (f$fn == 0)
     sprintf('<div class="fpanel"><h3>Native functions</h3><p class="na">No C function analysed.</p></div>')
   else funnel_panel("Native functions", c(
@@ -1251,9 +1256,9 @@ h('<title>R we type yet?</title>')
 h(common_style())
 h('</head><body>')
 
-h('<h1><span class="r">R</span> we type yet?</h1>')
+h(sprintf('<h1>%s<span class="r">R</span> we type yet?</h1>', tyr_logo()))
 h(sprintf('<p class="subtitle">%s for %d CRAN packages &mdash; generated %s%s</p>',
-  if (HAVE_R) 'TypR results (Rsem on the R code, NativeSem on the C code)' else 'Type-checking results',
+  if (HAVE_R) 'tyr results (Rsem on the R code, NativeSem on the C code)' else 'Type-checking results',
   n_packages, format(Sys.time(), "%Y-%m-%d %H:%M"),
   paste0(run_html(checker_meta), checker_version_html())))
 # The previous dashboard, deployed next to this one by CI (DASHBOARD_PREV_URL,
@@ -1272,8 +1277,8 @@ h(checker_status_html())
 
 if (HAVE_R) {
   h('<details class="howto"><summary>How to read this</summary>',
-    '<p>TypR checks a whole package: NativeSem infers types for the C functions the R code calls, those types are bound under their R names, then Rsem checks the R code. Every package is checked twice. <strong>Strict</strong> reports every name it cannot resolve; <strong>gradual</strong> gives such names the dynamic type and carries on.</p>',
-    '<p>Rsem is early. Most strict failures are <code>unbound variable</code> on a function the prelude (the R signatures TypR loads first) does not cover yet &mdash; mostly base R &mdash; not a limit of the type system. That is why the headline numbers are the strict/gradual pair and <strong>prelude debt</strong> (definitions blocked only by a missing prelude name), and why <strong>real typing failures</strong> counts only what still fails in gradual mode. Do not read the strict percentage as &ldquo;TypR types N% of R&rdquo;.</p>',
+    '<p>tyr checks a whole package: NativeSem infers types for the C functions the R code calls, those types are bound under their R names, then Rsem checks the R code. Every package is checked twice. <strong>Strict</strong> reports every name it cannot resolve; <strong>gradual</strong> gives such names the dynamic type and carries on.</p>',
+    '<p>Rsem is early. Most strict failures are <code>unbound variable</code> on a function the prelude (the R signatures tyr loads first) does not cover yet &mdash; mostly base R &mdash; not a limit of the type system. That is why the headline numbers are the strict/gradual pair and <strong>prelude debt</strong> (definitions blocked only by a missing prelude name), and why <strong>real typing failures</strong> counts only what still fails in gradual mode. Do not read the strict percentage as &ldquo;tyr types N% of R&rdquo;.</p>',
     '<p>The two sides are not independent: a C function that fails to type cannot be bound, and every R definition calling it then reports an unbound variable. The funnel below follows that path.</p>',
     '</details>')
 
@@ -1605,7 +1610,7 @@ if (HAVE_FUZZ) {
 
 # Missing prelude names: the most actionable R-side view. Only names whose
 # failure is the prelude's: a package's own names (cycles, ordering) and
-# native symbols TypR could not bind are fixed elsewhere.
+# native symbols tyr could not bind are fixed elsewhere.
 if (HAVE_R && nrow(r_strict) > 0) {
   blocked <- r_strict[!r_strict$anonymous & r_strict$unbound_kind %in% "prelude" &
                       !is.na(r_strict$error_name), , drop = FALSE]
@@ -1945,7 +1950,7 @@ if (HAVE_NATIVE && has_timing_col && any(!is.na(summary_df$mean_typing_sec))) {
 
 # Native pipeline phase breakdown. Only the phases some package has data for
 # get a column: NativeSem's own driver reported five (under --log-times),
-# TypR reports load_ty, parsing and the function pass. The R side has no
+# tyr reports load_ty, parsing and the function pass. The R side has no
 # phase instrumentation. `overhead = fundef_pass - total_typing_sec` is the
 # time inside the function pass not attributed to any function body.
 # `recording_save` only fires when --mlsem-recording is set.
@@ -1961,7 +1966,7 @@ if (HAVE_NATIVE && phase_have[["phase_fundef_pass_sec"]]) {
 
   if (HAVE_R) {
     h('<h2>Native pipeline phases <small>strict run</small></h2>')
-    h('<p class="phase-legend">TypR reports the native side&rsquo;s phases only; the R side has no phase instrumentation. ',
+    h('<p class="phase-legend">tyr reports the native side&rsquo;s phases only; the R side has no phase instrumentation. ',
       '<strong>Wall</strong> is the whole strict run, R side included.',
       ' <strong>&Sigma; infer_ast</strong> is the sum of every native function&rsquo;s inference time.',
       ' <strong>overhead</strong> = <code>fundef_pass &minus; &Sigma; infer_ast</code>: time spent inside the function pass that <em>isn\'t</em> attributed to any function body.',
@@ -2003,7 +2008,7 @@ if (HAVE_NATIVE && phase_have[["phase_fundef_pass_sec"]]) {
   h('</tbody></table>')
 }
 
-# Crashes (one row per run that did not exit 0; TypR runs carry their mode).
+# Crashes (one row per run that did not exit 0; tyr runs carry their mode).
 if (nrow(crashes_df) > 0) {
   has_mode <- "mode" %in% names(crashes_df)
   h('<h2>Crash details</h2>')
@@ -2045,15 +2050,15 @@ status_badge <- function(status) {
     "untypeable" = '<span class="badge badge-untypeable">untypeable</span>',
     "timeout"    = '<span class="badge badge-timeout">timeout</span>',
     "fallback"   = '<span class="badge badge-fallback" title="inference failed; bound at its declared C signature">C signature</span>',
-    "skipped"    = '<span class="badge badge-timeout" title="TypR caught an exception while checking it">skipped</span>',
-    "unknown"    = '<span class="badge badge-untypeable" title="no type and no error block: a failure TypR did not recognise">unknown</span>',
+    "skipped"    = '<span class="badge badge-timeout" title="tyr caught an exception while checking it">skipped</span>',
+    "unknown"    = '<span class="badge badge-untypeable" title="no type and no error block: a failure tyr did not recognise">unknown</span>',
     "internal"   = '<span class="badge badge-untypeable" title="internal error in NativeSem">internal</span>',
     sprintf('<span class="badge">%s</span>', esc(status))
   )
 }
 
 # --- R source snippets ---
-# TypR reports where each R definition starts. It ends where the next one in
+# tyr reports where each R definition starts. It ends where the next one in
 # the same file starts, less the blank and comment lines that belong to that
 # next one (its roxygen block). No ctags needed, and anonymous statements,
 # backticked names and S3 methods are located like any other definition.
@@ -2139,7 +2144,7 @@ render_function_block <- function(pkg, r, g = NULL, is_entry = FALSE, entry_conv
         switch(r$unbound_kind,
           prelude = "a name the prelude does not declare",
           package = "one of the package&rsquo;s own names, itself untyped",
-          native  = "a native symbol TypR could not bind",
+          native  = "a native symbol tyr could not bind",
           esc(r$unbound_kind))))
     }
     if (!is.na(r$error_detail) && nzchar(r$error_detail)) {
@@ -2191,7 +2196,7 @@ write_package_page <- function(pkg) {
   g_by_key <- split(g_by_key, g_by_key$key)
   has_r <- nrow(r_rows) > 0L
 
-  # Entry points: TypR lists them in entry_points.csv; NativeSem printed them.
+  # Entry points: tyr lists them in entry_points.csv; NativeSem printed them.
   ep_tbl <- if (!is.null(entry_points_df)) {
     e <- entry_points_df[entry_points_df$package == pkg, , drop = FALSE]
     data.frame(name = e$symbol, convention = sprintf(".%s", e$convention), stringsAsFactors = FALSE)
@@ -2258,7 +2263,7 @@ write_package_page <- function(pkg) {
     prism_head("../"),
     '</head><body>',
     '<a href="../index.html" class="back-link">&larr; all packages</a>',
-    sprintf('<h1><span class="r">%s</span></h1>', esc(pkg)),
+    sprintf('<h1>%s<span class="r">%s</span></h1>', tyr_logo("../"), esc(pkg)),
     sprintf('<p class="subtitle">%s%s</p>', subtitle, checker_version_html()),
     checker_status_html())
   if (HAVE_R) ph <- c(ph, funnel_html(funnel_counts(si)))

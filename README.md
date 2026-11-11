@@ -1,17 +1,17 @@
 # r-typing
 
-Pipeline to download CRAN package sources, run the **TypR** type checker on them, and collect results into CSVs and an HTML dashboard ("R we type yet?"). TypR checks a whole package: NativeSem types the C code under `src/`, those types are bound under their R names, then Rsem checks the R code under `R/`. The checker is a separate project ([PRL-PRG/tyr](https://github.com/PRL-PRG/tyr)); this repo just orchestrates it.
+Pipeline to download CRAN package sources, run the **tyr** type checker on them, and collect results into CSVs and an HTML dashboard ("R we type yet?"). tyr checks a whole package: NativeSem types the C code under `src/`, those types are bound under their R names, then Rsem checks the R code under `R/`. The checker is a separate project ([PRL-PRG/tyr](https://github.com/PRL-PRG/tyr)); this repo just orchestrates it.
 
-Every package is checked twice: **strict** reports every name TypR cannot resolve, **gradual** (`--gradual`) gives such names the dynamic type instead. The dashboard shows the pair.
+Every package is checked twice: **strict** reports every name tyr cannot resolve, **gradual** (`--gradual`) gives such names the dynamic type instead. The dashboard shows the pair.
 
 ## Prerequisites
 
-- **TypR** built (`make build` from its checkout). By default the pipeline uses a sibling checkout's build tree, `../typr/_build/default`, which holds `bin/main.exe`, `types/` and `prelude/` side by side. Point `TYPR_DIR` at another checkout, or `CHECKER_DIR`/`CHECKER` at another build. In CI all of this comes from the `ghcr.io/prl-prg/typr` image.
+- **tyr** built (`make build` from its checkout). By default the pipeline uses a sibling checkout's build tree, `../tyr/_build/default`, which holds `bin/main.exe`, `types/` and `prelude/` side by side. Point `TYR_DIR` at another checkout, or `CHECKER_DIR`/`CHECKER` at another build. In CI all of this comes from the `ghcr.io/prl-prg/typr` image.
 - **tree-sitter** shared library — its directory is passed via `TS_LIB_DIR` and appended to `LD_LIBRARY_PATH` when invoking the checker.
-- **R** with the **jsonlite** package (`parse_output.R` reads TypR's JSONL reports with it); otherwise only the built-in `parallel` and `utils` packages.
+- **R** with the **jsonlite** package (`parse_output.R` reads tyr's JSONL reports with it); otherwise only the built-in `parallel` and `utils` packages.
 - **GNU parallel** — drives `make typecheck`.
 - **bc** — wall-clock arithmetic in `scripts/run_one_package.sh`.
-- **Universal Ctags** — used by `make webpage` to locate C functions for the source snippets on the per-package pages (R definitions are located from TypR's own positions). The legacy Exuberant Ctags will not work; the script relies on `--fields=+ne` (line + end fields) and `--kinds-C=f`. If `ctags` is not on `PATH`, the dashboard still renders but without inline C source.
+- **Universal Ctags** — used by `make webpage` to locate C functions for the source snippets on the per-package pages (R definitions are located from tyr's own positions). The legacy Exuberant Ctags will not work; the script relies on `--fields=+ne` (line + end fields) and `--kinds-C=f`. If `ctags` is not on `PATH`, the dashboard still renders but without inline C source.
 - **tar**, **find**, **realpath** — standard POSIX tools used by the Makefile and shell scripts.
 - **xdg-open** *(optional)* — only needed by `make dashboard` to open the rendered HTML.
 
@@ -29,8 +29,8 @@ This runs the full pipeline: **download → extract → typecheck → results**.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `TYPR_DIR` | `../tyr` | tyr checkout, built by `make build-checker` |
-| `CHECKER_DIR` | `$(TYPR_DIR)/_build/default` | Directory the checker runs from; NativeSem looks for `types/` among its ancestors |
+| `TYR_DIR` | `../tyr` | tyr checkout, built by `make build-checker` |
+| `CHECKER_DIR` | `$(TYR_DIR)/_build/default` | Directory the checker runs from; NativeSem looks for `types/` among its ancestors |
 | `CHECKER` | `$(CHECKER_DIR)/bin/main.exe` | Checker binary |
 | `PRELUDE` | `$(CHECKER_DIR)/prelude/base.R` | R signatures loaded before each package (`--prelude`); skipped if the file does not exist |
 | `MODES` | `strict gradual` | Modes each package is checked in |
@@ -58,7 +58,7 @@ make MODES=strict                # strict runs only
 make CHECKER_OPTS='--debug'      # pass arbitrary flags
 ```
 
-TypR parses its flags with OCaml's `Arg`: an unknown flag fails the run with exit code 2, and values must be passed space-separated (`--timeout 20`, not `--timeout=20`).
+tyr parses its flags with OCaml's `Arg`: an unknown flag fails the run with exit code 2, and values must be passed space-separated (`--timeout 20`, not `--timeout=20`).
 
 ## Makefile targets
 
@@ -68,13 +68,13 @@ TypR parses its flags with OCaml's `Arg`: an unknown flag fails the run with exi
 | `make download` | Download source tarballs from CRAN |
 | `make extract` | Extract tarballs into `work/sources/` |
 | `make install` | Install each package from its tarball into `LIBRARY`, for fuzzing (see [Fuzzing](#fuzzing)) |
-| `make typecheck` | Run TypR on each package, in each mode (via GNU parallel) |
+| `make typecheck` | Run tyr on each package, in each mode (via GNU parallel) |
 | `make snapshot` | If `results/summary.csv` exists, move `results/` to `results.prev/` so the next run can use it as a baseline. Run automatically as a prerequisite of `make results`. |
 | `make results` | Parse the JSONL reports into CSV files (snapshots first) |
 | `make webpage` | Render `results/index.html` and per-package pages under `results/pkg/`, diffing against `BASELINE` when present |
 | `make dashboard` | `make webpage` then open the dashboard via `xdg-open` |
 | `make discover` | Generate `packages.txt` from CRAN (packages with compiled code) |
-| `make build-checker` | Build TypR (`make build` in `TYPR_DIR`) |
+| `make build-checker` | Build tyr (`make build` in `TYR_DIR`) |
 | `make trends` | Render `results/trends.html`, time series over past CI runs (needs `gh`) |
 | `make perf-report PKG=<name> [MODE=<mode>]` | Open `perf report` for a package profiled with `PERF=1` (see [Profiling](#profiling)) |
 | `make clean` | Remove all generated files |
@@ -84,7 +84,7 @@ In CI, the previous successful run's `results-<n>` artifact is downloaded into `
 
 ## Fuzzing
 
-With `FUZZ=1`, the strict runs also check the inferred types by running the packages' functions. For each typed function (R definition or `.Call` entry point), TypR draws calls inside its inferred domain and checks that each result has the type predicted for its arguments; it also draws calls just outside, and records which the function accepts. The verdicts are in the JSONL report (`fuzz_def` and `fuzz_sample` records); the samples, the harness's results and its log in `work/raw_output/strict/fuzz/<pkg>/`.
+With `FUZZ=1`, the strict runs also check the inferred types by running the packages' functions. For each typed function (R definition or `.Call` entry point), tyr draws calls inside its inferred domain and checks that each result has the type predicted for its arguments; it also draws calls just outside, and records which the function accepts. The verdicts are in the JSONL report (`fuzz_def` and `fuzz_sample` records); the samples, the harness's results and its log in `work/raw_output/strict/fuzz/<pkg>/`.
 
 The packages must be installed (`make install`, a prerequisite of `make typecheck` with `FUZZ=1`); those that do not load are not fuzzed. In the image, the dependencies are installed as binaries into the *system* library of the container, so installing and fuzzing must happen in the same container. The calls may have any side effect, so they run in a sandbox, `scripts/fuzz_sandbox.sh`:
 
@@ -118,13 +118,13 @@ The packages must be installed (`make install`, a prerequisite of `make typechec
 | `FUZZ_MEM_MB` | `4096` | Address-space limit of R, in MB |
 | `FUZZ_SANDBOX` | `bwrap` | `bwrap` or `none` (see above) |
 | `FUZZ_UNSAFE` | `0` | Must be `1` for `FUZZ_SANDBOX=none` |
-| `FUZZ_HARNESS` | the image's, or `$(TYPR_DIR)/fuzz` | Directory of TypR's `harness.R` and `describe.R` |
+| `FUZZ_HARNESS` | the image's, or `$(TYR_DIR)/fuzz` | Directory of tyr's `harness.R` and `describe.R` |
 
-In CI, fuzzing is on: every run of the *Pipeline* workflow fuzzes, whether started by a push, by TypR's dispatch or by hand (it adds about 4 minutes to a pipeline of about 30: the install, and the longest package's calls). A manual run can turn it off, with three inputs:
+In CI, fuzzing is on: every run of the *Pipeline* workflow fuzzes, whether started by a push, by tyr's dispatch or by hand (it adds about 4 minutes to a pipeline of about 30: the install, and the longest package's calls). A manual run can turn it off, with three inputs:
 
 - `fuzz` (on by default): installs the packages and runs with `FUZZ=1`. With bwrap, the job's container gets the privileges above (plus `--security-opt systempaths=unconfined`, for a fresh `/proc`), and a first step checks that bwrap works before the install.
 - `sandbox`: `bwrap` (default) or `none`. With `none`, the runner is the boundary: a VM thrown away after the job, which keeps only the artifacts it uploads.
-- `image`: the TypR image, `ghcr.io/prl-prg/typr:latest` by default. A push to a TypR branch named `fuzz` builds `ghcr.io/prl-prg/typr:fuzz`, to try a TypR change on the dashboard before merging it.
+- `image`: the tyr image, `ghcr.io/prl-prg/typr:latest` by default. A push to a tyr branch named `fuzz` builds `ghcr.io/prl-prg/typr:fuzz`, to try a tyr change on the dashboard before merging it.
 
 ```bash
 gh workflow run ci.yml --ref main -f fuzz=false   # a run without fuzzing
@@ -165,9 +165,9 @@ make typecheck PERF=1 PERF_OPTS='-e cache-misses -F 99'   # hardware event inste
 
 ## Output
 
-`make typecheck` writes `work/raw_output/<mode>/<pkg>.{jsonl,out,time,exit}`: TypR's report (one JSON record per line, `--report`), its stdout+stderr, the wall-clock time and the exit code. `make results` recomputes every number from the individual records of the reports, so a run that was killed still contributes what it reported before dying.
+`make typecheck` writes `work/raw_output/<mode>/<pkg>.{jsonl,out,time,exit}`: tyr's report (one JSON record per line, `--report`), its stdout+stderr, the wall-clock time and the exit code. `make results` recomputes every number from the individual records of the reports, so a run that was killed still contributes what it reported before dying.
 
-The CSV schema only ever grows: columns that predate TypR keep their names and their meaning (native), so older results and CI artifacts still read correctly. `schema_version` is 2 for TypR results, 3 once the `fz_*` columns were added.
+The CSV schema only ever grows: columns that predate tyr keep their names and their meaning (native), so older results and CI artifacts still read correctly. `schema_version` is 2 for tyr results, 3 once the `fz_*` columns were added.
 
 ### `results/summary.csv`
 
@@ -176,7 +176,7 @@ One row per package (never one per mode).
 | Column | Description |
 |--------|-------------|
 | `package` | Package name |
-| `schema_version` | 2, or 3 with the `fz_*` columns (absent before TypR) |
+| `schema_version` | 2, or 3 with the `fz_*` columns (absent before tyr) |
 | `ep_call`, `ep_c`, `ep_fortran`, `ep_external` | Entry points per calling convention |
 | `n_ep` | Distinct entry-point symbols the R code reaches |
 | `n_ep_reached` | Entry points defined in `src/` |
@@ -193,8 +193,8 @@ One row per package (never one per mode).
 | `n_c_files`, `n_r_files` | Source files found |
 | `r_n_defs` | Named top-level R definitions (the R denominator) |
 | `r_n_stmts` | Anonymous top-level statements, never in a denominator |
-| `r_n_typed`, `r_n_untypeable`, `r_n_timeout`, `r_n_skipped`, `r_n_unknown` | R definitions by outcome (`skipped`: TypR caught an exception; `unknown`: neither a type nor an error block) |
-| `r_n_unbound` | R definitions failing on an unbound name, split into `r_n_unbound_prelude` (a name the prelude lacks), `r_n_unbound_package` (one of the package's own names, itself untyped) and `r_n_unbound_native` (a native symbol TypR could not bind) |
+| `r_n_typed`, `r_n_untypeable`, `r_n_timeout`, `r_n_skipped`, `r_n_unknown` | R definitions by outcome (`skipped`: tyr caught an exception; `unknown`: neither a type nor an error block) |
+| `r_n_unbound` | R definitions failing on an unbound name, split into `r_n_unbound_prelude` (a name the prelude lacks), `r_n_unbound_package` (one of the package's own names, itself untyped) and `r_n_unbound_native` (a native symbol tyr could not bind) |
 | `r_n_other_err` | R definitions untypeable for another reason |
 | `r_n_empty_ret`, `r_n_annotated` | R definitions typed with an `empty` result; checked against a `#\|` signature |
 | `r_n_files`, `r_n_files_unparsed` | R files, and those that did not parse |
@@ -228,7 +228,7 @@ One row per native function or R definition. Native functions appear once (from 
 | `error_title` | Error category (if not typed) |
 | `error_detail` | Error details, or the exception for `skipped` |
 | `timing_sec` | Time spent on it |
-| `side` | `native` or `r` (`native` for every row before TypR) |
+| `side` | `native` or `r` (`native` for every row before tyr) |
 | `mode` | `strict` or `gradual` |
 | `file`, `line`, `col` | Where it is defined, relative to the package root (no line for native functions) |
 | `degenerate` | Typed with an `empty` result |
@@ -298,7 +298,7 @@ With `FUZZ=1` only. The calls behind `fuzz.csv`: every call with an unexpected v
 
 ### `results/provenance.json`
 
-The four commits the checker was built from — TypR, Rsem, NativeSem, rstt — and whether the submodules were at the commits TypR pins (`pinned`). Copied from the image in CI, derived from git for a local checkout. `checker_version.txt`, `checker_status.txt` and `checker_subject.txt` are still written alongside it.
+The four commits the checker was built from — tyr, Rsem, NativeSem, rstt — and whether the submodules were at the commits tyr pins (`pinned`). Copied from the image in CI, derived from git for a local checkout. `checker_version.txt`, `checker_status.txt` and `checker_subject.txt` are still written alongside it.
 
 ### `results/index.html` and `results/pkg/<pkg>.html`
 
@@ -317,7 +317,7 @@ scripts/
   download_packages.R      # Download source tarballs
   discover_packages.R      # Query CRAN for packages with native code
   record_checker_version.sh # Record the checker's provenance
-  run_one_package.sh       # Run TypR on one package in one mode
+  run_one_package.sh       # Run tyr on one package in one mode
   parse_output.R           # Parse the JSONL reports into CSV
   generate_webpage.R       # Render results/index.html + results/pkg/*.html
   trends.Rmd               # Time series over past CI runs

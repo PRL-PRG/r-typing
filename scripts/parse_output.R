@@ -1,5 +1,5 @@
 #!/usr/bin/env Rscript
-# Parse TypR's JSONL reports into the dashboard's CSVs.
+# Parse tyr's JSONL reports into the dashboard's CSVs.
 # Usage: Rscript scripts/parse_output.R [raw_dir] [results_dir]
 #
 # raw_dir holds one subdirectory per mode (strict, gradual), each with the
@@ -38,7 +38,7 @@ results_dir <- if (length(args) >= 2) args[2] else "results"
 SCHEMA_VERSION <- 3L
 MODES <- c("strict", "gradual")
 
-# Verdicts of the fuzzing, per direction (see typr's lib/fuzz.ml).
+# Verdicts of the fuzzing, per direction (see tyr's lib/fuzz.ml).
 FUZZ_IN  <- c("ok", "unsound", "unknown", "error_pkg", "error_type",
               "timeout", "crash", "invalid", "not_run")
 FUZZ_OUT <- c("rejected", "accepted", "not_forced", "timeout", "crash", "invalid", "not_run")
@@ -82,7 +82,7 @@ fld <- function(df, name, default = NA) {
   if (!is.null(df) && name %in% names(df)) df[[name]] else rep(default, NROW(df))
 }
 
-# Whether a definition has a parameter typed `any`, from TypR's `any_args`:
+# Whether a definition has a parameter typed `any`, from tyr's `any_args`:
 # the parameters, `;`-joined ("" for none). NA for a report that predates the
 # field.
 any_arg_of <- function(df) {
@@ -138,7 +138,7 @@ native_summary <- function(rep) {
       ep_c        = sum(conv == "C"),
       ep_fortran  = sum(conv == "Fortran"),
       ep_external = sum(conv == "External"),
-      # Distinct symbols (the per-convention counts add up to it: TypR
+      # Distinct symbols (the per-convention counts add up to it: tyr
       # reports one convention per symbol).
       n_ep         = length(unique(symbols)),
       # Defined in src/, so typed at all.
@@ -158,7 +158,7 @@ native_summary <- function(rep) {
     ),
     timing_stats(fld(fn, "elapsed_sec", NA_real_)),
     list(
-      # A phase record since TypR loads the .ty files after declaring the
+      # A phase record since tyr loads the .ty files after declaring the
       # class-overloads; older reports have it in the run record.
       phase_load_ty_sec        = {
         s <- phase_sec(rep, "load_ty")
@@ -192,7 +192,7 @@ r_summary <- function(rep, prefix) {
     n_timeout        = sum(status == "timeout"),
     n_skipped        = sum(status == "skipped"),
     # No error block and no type either: a failure Rsem printed in a shape
-    # TypR does not recognise.
+    # tyr does not recognise.
     n_unknown        = sum(status == "unknown"),
     n_unbound        = sum(!is.na(unbound)),
     n_unbound_prelude = sum(unbound == "prelude", na.rm = TRUE),
@@ -264,7 +264,7 @@ r_rows <- function(pkg, rep, root, mode) {
   data.frame(
     package = pkg, function_name = rd$name, status = rd$status,
     type_sig = fld(rd, "type"), error_title = fld(rd, "error_title"),
-    # A skipped definition has no error block, only the exception TypR caught.
+    # A skipped definition has no error block, only the exception tyr caught.
     error_detail = ifelse(is.na(fld(rd, "error_detail")), fld(rd, "skipped_exn"), fld(rd, "error_detail")),
     timing_sec = fld(rd, "elapsed_sec"),
     side = "r", mode = mode, file = rel_path(fld(rd, "file"), root),
@@ -279,7 +279,7 @@ r_rows <- function(pkg, rep, root, mode) {
 
 # ===== Fuzzing =====
 #
-# TypR writes the fuzzing's records once the harness is done, so a run killed
+# tyr writes the fuzzing's records once the harness is done, so a run killed
 # while fuzzing has none. The fuzz directory of run_one_package.sh tells a
 # fuzzed package from one that was not.
 

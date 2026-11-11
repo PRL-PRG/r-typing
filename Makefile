@@ -1,8 +1,8 @@
 # The checker is tyr. In the CI image CHECKER_DIR/CHECKER come from the
 # environment (/checker); locally they default to a sibling tyr checkout's
 # build tree, which holds types/ and prelude/ next to bin/.
-TYPR_DIR    ?= $(abspath ../tyr)
-CHECKER_DIR ?= $(TYPR_DIR)/_build/default
+TYR_DIR     ?= $(or $(TYPR_DIR),$(abspath ../tyr))
+CHECKER_DIR ?= $(TYR_DIR)/_build/default
 CHECKER     ?= $(CHECKER_DIR)/bin/main.exe
 PRELUDE     ?= $(CHECKER_DIR)/prelude/base.R
 NPROC       := $(shell nproc)
@@ -77,7 +77,7 @@ FUZZ_MEM_MB ?= 4096
 FUZZ_SANDBOX ?= bwrap
 FUZZ_UNSAFE ?= 0
 # The harness: the image's, or the tyr checkout's.
-FUZZ_HARNESS ?= $(or $(TYPR_FUZZ_HARNESS),$(TYPR_DIR)/fuzz)
+FUZZ_HARNESS ?= $(or $(TYPR_FUZZ_HARNESS),$(TYR_DIR)/fuzz)
 
 export CHECKER_DIR CHECKER PRELUDE TS_LIB_DIR FUN_TIMEOUT CHECKER_OPTS PERF PERF_OPTS RUN_TIMEOUT MEM_LIMIT_MB
 export LIBRARY FUZZ FUZZ_SAMPLES FUZZ_SEED FUZZ_CALL_TIMEOUT FUZZ_RUN_TIMEOUT FUZZ_MEM_MB FUZZ_SANDBOX FUZZ_UNSAFE FUZZ_HARNESS
@@ -107,7 +107,7 @@ extract: work/.extract_done
 
 # --- Install the packages, for fuzzing their inferred types ---
 # Each from its own tarball, into LIBRARY; dependencies from CRAN (binaries
-# when bspm is installed, as in the TypR image). Failures are recorded in
+# when bspm is installed, as in the tyr image). Failures are recorded in
 # LIBRARY/install_status.csv, not fatal.
 LIBRARY ?= work/library
 
@@ -178,7 +178,7 @@ discover:
 
 # --- Build the type checker ---
 build-checker:
-	$(MAKE) -C $(TYPR_DIR) build
+	$(MAKE) -C $(TYR_DIR) build
 
 # --- Trend report across CI runs ---
 # Downloads results/ artifacts from past successful CI runs (cached under

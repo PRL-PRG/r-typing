@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Run TypR on one extracted package directory, in one mode.
+# Run tyr on one extracted package directory, in one mode.
 # Usage: run_one_package.sh <package-dir> <output-root> [strict|gradual]
 #
 # Produces, under <output-root>/<mode>/:
-#   <pkg>.jsonl — TypR's report (one JSON record per line); the measurements
+#   <pkg>.jsonl — tyr's report (one JSON record per line); the measurements
 #   <pkg>.out   — stdout+stderr, kept for debugging
 #   <pkg>.time  — wall-clock seconds
 #   <pkg>.exit  — exit code
@@ -34,7 +34,7 @@ mkdir -p "$OUT_DIR"
 # NativeSem looks for types/ among the ancestors of the working directory.
 cd "$CHECKER_DIR"
 
-# TypR parses its flags with OCaml's Arg: values go space-separated, never as
+# tyr parses its flags with OCaml's Arg: values go space-separated, never as
 # --flag=value, and the package directory comes last.
 OPTS=(--report "$OUT_DIR/$PKG_NAME.jsonl")
 case "$MODE" in

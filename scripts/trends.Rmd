@@ -14,9 +14,9 @@ params:
   top_n_packages: 24
   top_n_categories: 8
   # First day of the performance plots: R-side timings start on 2026-10-23,
-  # with TypR, and the native ones before are sparse.
+  # with tyr, and the native ones before are sparse.
   perf_since: "2026-10-15"
-  # Where a repository_dispatch run came from, by event type: TypR now, the
+  # Where a repository_dispatch run came from, by event type: tyr now, the
   # NativeSem repository for runs before the migration.
   upstream_repo: "PRL-PRG/tyr"
   legacy_upstream_repo: "programLyrique/nativesem"
@@ -149,14 +149,14 @@ summary_all   <- bind_rows(lapply(loaded, `[[`, "summary"))
 functions_all <- bind_rows(lapply(loaded, `[[`, "functions"))
 
 # Older artifacts predate some columns (e.g. n_timeout, and every r_*/rg_*
-# column before TypR). Backfill with 0 so downstream code doesn't have to
-# special-case missing columns: a run before TypR did type 0 R definitions.
+# column before tyr). Backfill with 0 so downstream code doesn't have to
+# special-case missing columns: a run before tyr did type 0 R definitions.
 for (col in c("n_timeout", "n_untypeable", "n_ep_typed", "n_typed", "n_functions",
               "r_n_defs", "r_n_typed", "rg_n_typed", "r_n_unbound_prelude")) {
   if (!col %in% names(summary_all)) summary_all[[col]] <- 0L
   summary_all[[col]][is.na(summary_all[[col]])] <- 0L
 }
-# Every function row before TypR is a native function of the one (strict) run.
+# Every function row before tyr is a native function of the one (strict) run.
 for (col in c("side", "mode")) {
   if (!col %in% names(functions_all)) functions_all[[col]] <- NA_character_
 }
@@ -164,7 +164,7 @@ functions_all$side[is.na(functions_all$side)] <- "native"
 functions_all$mode[is.na(functions_all$mode)] <- "strict"
 
 # Runs triggered by repository_dispatch carry the event type as displayTitle:
-# "typr-updated" (fired by TypR) or "r-c-typing-updated" (fired by NativeSem
+# "typr-updated" (fired by tyr) or "r-c-typing-updated" (fired by NativeSem
 # before the migration). Resolve them to the upstream commit subject by
 # matching the run's start time to the most recent main-branch commit on the
 # repository that fired it.
@@ -218,7 +218,7 @@ if (any(is_dispatch)) {
   summary_all$commit_title[is_dispatch][keep] <- resolved[keep]
 }
 
-# Per-run entry-point totals: distinct symbols where TypR counted them (n_ep),
+# Per-run entry-point totals: distinct symbols where tyr counted them (n_ep),
 # else the sum across conventions, which counts a symbol twice when it is
 # reached under two of them.
 if (!"n_ep" %in% names(summary_all)) summary_all$n_ep <- NA_integer_
@@ -271,7 +271,7 @@ ggplot(totals, aes(ts, pct_typed)) +
 The area between the two lines is the gradual gap: what fails in strict mode
 but types once unbound names are given the dynamic type. The dashed line adds
 prelude debt to the strict count, the part of that gap writing prelude
-signatures would close. Runs before TypR have no R side and are left out.
+signatures would close. Runs before tyr have no R side and are left out.
 
 ```{r overall-r}
 r_totals <- summary_all %>%

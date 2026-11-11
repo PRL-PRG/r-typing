@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# The command TypR runs its fuzzing harness with (--fuzz-runner): Rscript, in
+# The command tyr runs its fuzzing harness with (--fuzz-runner): Rscript, in
 # a sandbox, since the calls it makes to the package's functions may have any
 # side effect.
-# Usage (by TypR): fuzz_sandbox.sh HARNESS.R DESCRIBE.R PKG SAMPLES RESULTS TIMEOUT
+# Usage (by tyr): fuzz_sandbox.sh HARNESS.R DESCRIBE.R PKG SAMPLES RESULTS TIMEOUT
 #
 # FUZZ_SANDBOX selects the sandbox:
 #   bwrap (default)  bubblewrap: the whole file system read-only but for the
@@ -22,7 +22,7 @@
 #                    packages to suspect.
 # Either way: FUZZ_MEM_MB (default 4096) caps the address space of R, and
 # FUZZ_RUN_TIMEOUT (seconds, default 600) one run of the harness, after
-# which TypR resumes it after the sample it was stuck on.
+# which tyr resumes it after the sample it was stuck on.
 
 set -u
 

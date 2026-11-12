@@ -7,6 +7,8 @@
 #   <pkg>.out   — stdout+stderr, kept for debugging
 #   <pkg>.time  — wall-clock seconds
 #   <pkg>.exit  — exit code
+#   <pkg>.llm.jsonl — with LLM set, in the modes of LLM_MODES: the LLM
+#                 fallback's conversations (one JSON record per line)
 #   fuzz/<pkg>/ — with FUZZ=1, strict mode only: the fuzzing's samples, the
 #                 harness's results and log (its verdicts are in the report)
 #
@@ -49,6 +51,22 @@ fi
 # when running against a checkout that does not have one.
 if [ -n "${PRELUDE:-}" ] && [ -f "$PRELUDE" ]; then
     OPTS+=(--prelude "$PRELUDE")
+fi
+
+# The LLM fallback (LLM=provider:model): asks a model for a signature of the
+# definitions inference fails on, in the modes of LLM_MODES (gradual only by
+# default: in strict mode most failures are names the prelude lacks, which no
+# signature fixes). The provider's API key comes from the environment
+# (ANTHROPIC_API_KEY, MISTRAL_API_KEY, ...). LLM_OPTS: more --llm-* flags;
+# LLM_CACHE: a directory where replies are kept and reused.
+if [ -n "${LLM:-}" ] && [[ " ${LLM_MODES:-gradual} " == *" $MODE "* ]]; then
+    OPTS+=(--llm "$LLM" --llm-transcript "$OUT_DIR/$PKG_NAME.llm.jsonl")
+    if [ -n "${LLM_CACHE:-}" ]; then
+        OPTS+=(--llm-cache "$(realpath -m "$LLM_CACHE")")
+    fi
+    # Word splitting is wanted: several flags in one variable.
+    # shellcheck disable=SC2206
+    OPTS+=(${LLM_OPTS-})
 fi
 
 # Fuzzing (FUZZ=1): the strict run only (dyn has no values to draw), and only
@@ -97,7 +115,7 @@ fi
 
 # Stale files from an earlier run would be read as this run's, should this
 # one be killed before writing its own.
-rm -f "$OUT_DIR/$PKG_NAME".{jsonl,exit,time}
+rm -f "$OUT_DIR/$PKG_NAME".{jsonl,exit,time,llm.jsonl}
 
 START=$(date +%s.%N)
 (

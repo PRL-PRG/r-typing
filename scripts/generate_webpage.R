@@ -128,6 +128,35 @@ b_nat <- if (!is.null(b_summary_df)) native_cols(b_summary_df) else NULL
 HAVE_NATIVE <- any(nat$n > 0, na.rm = TRUE)
 HAVE_R      <- any(!is.na(rs$n))
 
+# The LLM fallback (tyr's --llm), over both modes: a run without it has no
+# llm_* columns, or zeros.
+llm_cols <- function(df) {
+  both <- function(f) rowSums(cbind(getcol(df, paste0("r_", f), 0), getcol(df, paste0("rg_", f), 0)), na.rm = TRUE)
+  model <- getcol(df, "rg_llm_model", NA_character_)
+  model[is.na(model)] <- getcol(df, "r_llm_model", NA_character_)[is.na(model)]
+  list(model = model, tried = both("n_llm_tried"), typed = both("n_llm_typed"),
+       gave_up = both("n_llm_gave_up"), error = both("n_llm_error"),
+       input = both("llm_input_tokens"), output = both("llm_output_tokens"),
+       cache_read = both("llm_cache_read_tokens"), cache_write = both("llm_cache_write_tokens"),
+       sec = both("llm_sec"))
+}
+llm <- llm_cols(summary_df)
+HAVE_LLM <- any(llm$tried > 0, na.rm = TRUE)
+
+# What the LLM fallback cost, from its token counts and llm_prices.csv (USD
+# per million tokens, per provider:model). NA for a model with no price there.
+LLM_PRICES <- if (file.exists("llm_prices.csv")) read.csv("llm_prices.csv", stringsAsFactors = FALSE) else NULL
+llm_cost <- function(model, input, output, cache_read, cache_write) {
+  p <- if (is.null(LLM_PRICES)) NULL else LLM_PRICES[match(model, LLM_PRICES$model), , drop = FALSE]
+  if (is.null(p)) return(rep(NA_real_, length(model)))
+  z <- function(v) ifelse(is.na(v), 0, as.numeric(v))
+  (z(input) * p$input + z(output) * p$output +
+   z(cache_read) * p$cache_read + z(cache_write) * p$cache_write) / 1e6
+}
+fmt_usd <- function(x) ifelse(is.na(x), NA_character_,
+                              ifelse(x < 0.01, sprintf("$%.4f", x), sprintf("$%.2f", x)))
+llm$cost <- llm_cost(llm$model, llm$input, llm$output, llm$cache_read, llm$cache_write)
+
 # Fuzzing of the strict run (fz_*). The counts are NA for a package that was
 # not fuzzed, or whose run was killed before the fuzzing reported.
 fuzz_cols <- function(df) {
@@ -925,6 +954,11 @@ common_style <- function() {
     '.badge-conv { background: #ccfbf1; color: #115e59; font-family: "JetBrains Mono", monospace; }',
     '.badge-empty { background: #fde68a; color: #92400e; }',
     '.badge-any { background: #fef3c7; color: #92400e; }',
+    '.badge-llm-typed { background: #dbeafe; color: #1e40af; }',
+    'td.llm { white-space: nowrap; }',
+    '.llm-cost { color: #6b7280; font-size: 0.85em; }',
+    '.badge-llm-other { background: #e5e7eb; color: #374151; }',
+    '.llm-detail .llm-meta { color: #6b7280; font-size: 0.85em; }',
     '.badge-change-new { background: #e0e7ff; color: #3730a3; }',
     '.badge-change-good { background: var(--good-bg); color: var(--good); font-family: "JetBrains Mono", monospace; }',
     '.badge-change-bad  { background: var(--bad-bg);  color: var(--bad); font-family: "JetBrains Mono", monospace; }',
@@ -1328,6 +1362,20 @@ if (HAVE_R) {
   h(stat_card(tot(rs$skipped) + tot(rs$unknown), "R skipped / unrecognised"))
   h(stat_card(tot(rs$stmts), "anonymous R statements", "not in any denominator"))
   h(stat_card(tot(rs$files_unparsed), "R files not parsed"))
+  if (HAVE_LLM) {
+    models <- unique(llm$model[!is.na(llm$model)])
+    priced <- llm$tried > 0
+    cost <- if (any(priced) && all(!is.na(llm$cost[priced]))) sprintf(" &middot; cost %s", fmt_usd(sum(llm$cost[priced])))
+            else if (any(!is.na(llm$cost[priced]))) sprintf(" &middot; cost %s (packages with a known price only)", fmt_usd(sum(llm$cost[priced], na.rm = TRUE)))
+            else ""
+    h(stat_card(sprintf("%d / %d", as.integer(tot(llm$typed)), as.integer(tot(llm$tried))),
+      "typed by the LLM fallback",
+      sprintf('%s%s &middot; tokens: %s in, %s cache read, %s cache written, %s out &middot; %s',
+        esc(paste(models, collapse = ", ")), cost,
+        format(tot(llm$input), big.mark = ","), format(tot(llm$cache_read), big.mark = ","),
+        format(tot(llm$cache_write), big.mark = ","), format(tot(llm$output), big.mark = ","),
+        fmt_func_timing(tot(llm$sec)))))
+  }
   h('</div>')
 
   h('<h2>From native to R</h2>')
@@ -1420,14 +1468,17 @@ if (HAVE_R) {
     if (HAVE_FUZZ) c('<th class="grp-start" title="typed definitions and entry points called">Defs</th>',
       '<th title="definitions with a call inside their inferred domain returning outside the predicted type">Unsound</th>',
       '<th title="definitions returning on a call just outside their inferred domain">Accept outside</th>'),
+    if (HAVE_LLM) '<th class="grp-start" title="definitions the LLM fallback typed, out of those it was asked about">LLM</th>',
     '<th class="grp-start">Time</th>',
     if (!is.null(time_ratios)) '<th title="median ratio of the time to type a function to the baseline&#39;s, over the functions typed in both runs">Per function</th>',
     '<th>Status</th>')
   n_run <- if (is.null(time_ratios)) 2L else 3L
   h('<table><colgroup><col></colgroup><colgroup span="2"></colgroup><colgroup span="2"></colgroup><colgroup span="5"></colgroup>',
-    if (HAVE_FUZZ) '<colgroup span="3"></colgroup>', sprintf('<colgroup span="%d"></colgroup>', n_run),
+    if (HAVE_FUZZ) '<colgroup span="3"></colgroup>', if (HAVE_LLM) '<colgroup span="1"></colgroup>',
+    sprintf('<colgroup span="%d"></colgroup>', n_run),
     '<thead><tr><th></th><th colspan="2" class="grp">Native</th><th colspan="2" class="grp">Linkage</th>',
     '<th colspan="5" class="grp">R definitions</th>', if (HAVE_FUZZ) '<th colspan="3" class="grp">Fuzzing</th>',
+    if (HAVE_LLM) '<th class="grp">LLM</th>',
     sprintf('<th colspan="%d" class="grp">Run</th></tr>', n_run),
     '<tr>', paste(pkg_table_th, collapse = ""), '</tr></thead><tbody>')
   b_unsound_by_pkg <- if (!is.null(b_fz) && any(!is.na(b_fz$unsound)))
@@ -1460,7 +1511,12 @@ if (HAVE_R) {
     debt <- rs$unbound_prelude[i]
     ratio_cell <- if (is.null(time_ratios)) "" else
       sprintf('<td class="num">%s</td>', ratio_html(time_ratios[time_ratios$package == pkg, , drop = FALSE]))
-    h(sprintf('<tr><td class="pkg">%s</td>%s<td class="num grp-start">%s</td><td>%s%s%s</td><td>%s</td><td class="num">%s</td><td class="num">%s</td>%s<td class="num grp-start">%s</td>%s<td>%s</td></tr>',
+    llm_cell <- if (!HAVE_LLM) "" else if (llm$tried[i] == 0) '<td class="num grp-start llm"><span class="na">&mdash;</span></td>' else
+      sprintf('<td class="num grp-start llm"><a href="pkg/%s.html#llm" title="%d gave up, %d errors">%d / %d</a>%s</td>',
+              esc(pkg), as.integer(llm$gave_up[i]), as.integer(llm$error[i]),
+              as.integer(llm$typed[i]), as.integer(llm$tried[i]),
+              if (is.na(llm$cost[i])) "" else sprintf(' <span class="llm-cost">%s</span>', fmt_usd(llm$cost[i])))
+    h(sprintf('<tr><td class="pkg">%s</td>%s<td class="num grp-start">%s</td><td>%s%s%s</td><td>%s</td><td class="num">%s</td><td class="num">%s</td>%s%s<td class="num grp-start">%s</td>%s<td>%s</td></tr>',
       pkg_link, native_cells,
       if (is.na(rs$n[i])) "&mdash;" else as.character(rs$n[i]),
       pct_bar(rs$typed[i], rs$n[i], "no R definitions"), chip(rs$timeout[i], "timed out"),
@@ -1469,7 +1525,7 @@ if (HAVE_R) {
       if (is.na(gap)) "&mdash;" else sprintf('<span class="delta-gap">+%d</span>', as.integer(gap)),
       if (is.na(debt) || debt == 0) as.character(if (is.na(debt)) "&mdash;" else 0L) else
         sprintf('<a href="pkg/%s.html#unbound">%d</a>', esc(pkg), as.integer(debt)),
-      fuzz_cells(i, pkg),
+      fuzz_cells(i, pkg), llm_cell,
       paste0(fmt_time(summary_df$elapsed_sec[i]),
              time_change_html(summary_df$elapsed_sec[i], b_elapsed_by_pkg[pkg])),
       ratio_cell, run_status_html(i)))
@@ -2113,6 +2169,16 @@ render_function_block <- function(pkg, r, g = NULL, is_entry = FALSE, entry_conv
     sprintf(' <span class="badge badge-any" title="a parameter typed any in at least one arrow &mdash; inference learned nothing about it">any: %s</span>',
             if (length(shown) == 0L) "argument" else esc(paste(shown, collapse = ", ")))
   } else ''
+  # The LLM fallback (tyr's --llm), in whichever run tried it: the gradual
+  # one if both did.
+  llm_tried <- function(x) !is.null(x) && isTRUE(as.logical(x$llm_tried))
+  lr <- if (llm_tried(g)) g else if (llm_tried(r)) r else NULL
+  llm_outcome <- if (is.null(lr) || is.na(lr$llm_outcome)) "" else lr$llm_outcome
+  llm_badge <- if (is.null(lr)) '' else
+    sprintf(' <span class="badge %s" title="the LLM fallback (%s) was asked for a signature after inference failed, in %s mode">LLM: %s</span>',
+            if (llm_outcome == "typed") "badge-llm-typed" else "badge-llm-other",
+            esc(lr$llm_model), esc(lr$mode),
+            esc(switch(llm_outcome, typed = "typed", gave_up = "gave up", error = "error", "?")))
   status_html <- if (identical(status, status_g)) status_badge(status) else
     sprintf('<span class="st-strict">%s</span><span class="st-gradual">%s</span>',
             status_badge(status), status_badge(status_g))
@@ -2122,10 +2188,11 @@ render_function_block <- function(pkg, r, g = NULL, is_entry = FALSE, entry_conv
   # The fuzzing of this definition (an entry point may be fuzzed under several
   # R names): a data-fuzz attribute for the filter, a badge, and its details.
   fuzz_attr <- if (is.null(fuzz)) "" else sprintf(' data-fuzz="%s"', fuzz_state(fuzz$rows))
-  hh <- c(hh, sprintf('<div class="func-list" data-side="%s" data-status="%s" data-status-g="%s" data-unbound="%s" data-unbound-kind="%s" data-entry="%s" data-conv="%s" data-name="%s" data-changed="%s" data-empty-ret="%s" data-any-arg="%s"%s><h3>%s %s%s%s%s%s%s%s%s</h3>',
+  hh <- c(hh, sprintf('<div class="func-list" data-side="%s" data-status="%s" data-status-g="%s" data-unbound="%s" data-unbound-kind="%s" data-entry="%s" data-conv="%s" data-name="%s" data-changed="%s" data-empty-ret="%s" data-any-arg="%s" data-llm="%s"%s><h3>%s %s%s%s%s%s%s%s%s%s</h3>',
     esc(r$side), esc(status), esc(status_g), esc(unbound),
     esc(if (nzchar(unbound)) r$unbound_kind else ""),
-    entry_attr, esc(conv_attr), esc(tolower(name)), changed_attr, empty_attr, any_attr, fuzz_attr, esc(name),
+    entry_attr, esc(conv_attr), esc(tolower(name)), changed_attr, empty_attr, any_attr,
+    esc(llm_outcome), fuzz_attr, esc(name),
     status_html,
     if (is_entry) ' <span class="badge badge-entry">entry</span>' else '',
     conv_badges,
@@ -2133,6 +2200,7 @@ render_function_block <- function(pkg, r, g = NULL, is_entry = FALSE, entry_conv
     change$html,
     empty_badge,
     any_badge,
+    llm_badge,
     if (is.null(fuzz)) "" else fuzz_badge(fuzz$rows)))
   if (status %in% c("typed", "fallback")) {
     if (!is.na(r$type_sig) && nzchar(r$type_sig)) {
@@ -2163,6 +2231,27 @@ render_function_block <- function(pkg, r, g = NULL, is_entry = FALSE, entry_conv
             else if (isTRUE(!is.na(g$error_title))) sprintf('<div class="error-line">%s</div>', esc(g$error_title))
             else ""
     hh <- c(hh, sprintf('<details><summary>gradual mode: %s</summary>%s</details>', esc(status_g), body))
+  }
+  if (!is.null(lr)) {
+    num <- function(v) if (is.null(v) || is.na(v)) 0 else as.numeric(v)
+    body <- if (llm_outcome == "typed")
+      sprintf('<div class="type-sig">%s</div>%s', type_sig_html(lr$llm_type),
+              if (isTRUE(!is.na(lr$llm_signature)) && !identical(lr$llm_signature, lr$llm_type))
+                sprintf('<div class="llm-meta">checked as <code>%s</code></div>', esc(lr$llm_signature)) else '')
+    else if (isTRUE(!is.na(lr$llm_explanation)))
+      sprintf('<div class="error-line">%s</div>', esc(lr$llm_explanation))
+    else ''
+    cost <- llm_cost(lr$llm_model, num(lr$llm_input_tokens), num(lr$llm_output_tokens),
+                     num(lr$llm_cache_read_tokens), num(lr$llm_cache_write_tokens))
+    meta <- sprintf('<div class="llm-meta">%s &middot; %s mode &middot; %d turns, %d checks &middot; %s &middot; tokens: %d in, %d cache read, %d cache written, %d out%s</div>',
+      esc(lr$llm_model), esc(lr$mode), as.integer(num(lr$llm_turns)), as.integer(num(lr$llm_checks)),
+      fmt_func_timing(num(lr$llm_elapsed_sec)), as.integer(num(lr$llm_input_tokens)),
+      as.integer(num(lr$llm_cache_read_tokens)), as.integer(num(lr$llm_cache_write_tokens)),
+      as.integer(num(lr$llm_output_tokens)),
+      if (is.na(cost)) "" else sprintf(" &middot; cost %s", fmt_usd(cost)))
+    hh <- c(hh, sprintf('<details class="llm-detail"%s><summary>LLM fallback: %s</summary>%s%s</details>',
+      if (llm_outcome == "typed") " open" else "",
+      esc(switch(llm_outcome, typed = "typed", gave_up = "gave up", error = "error", "?")), body, meta))
   }
   if (!is.na(r$timing_sec)) {
     hh <- c(hh, sprintf('<div class="timing">timing: %s</div>', fmt_func_timing(r$timing_sec)))
@@ -2200,6 +2289,7 @@ write_package_page <- function(pkg) {
   g_by_key <- here[here$side == "r" & here$mode == "gradual", , drop = FALSE]
   g_by_key <- split(g_by_key, g_by_key$key)
   has_r <- nrow(r_rows) > 0L
+  has_llm <- any(as.logical(getcol(here, "llm_tried", FALSE)) %in% TRUE)
 
   # Entry points: tyr lists them in entry_points.csv; NativeSem printed them.
   ep_tbl <- if (!is.null(entry_points_df)) {
@@ -2295,6 +2385,7 @@ write_package_page <- function(pkg) {
     if (have_baseline) '<label><input type="checkbox" id="flt-changed"> changed only</label>' else '',
     '<label><input type="checkbox" id="flt-empty"> empty return only</label>',
     '<label title="a parameter typed any in at least one arrow"><input type="checkbox" id="flt-any"> argument typed any</label>',
+    if (has_llm) '<label title="definitions the LLM fallback was asked about"><input type="checkbox" id="flt-llm"> LLM tried only</label>' else '',
     if (has_fuzz) c('<label title="unsound, accepting calls outside the domain, or crashing"><input type="checkbox" id="flt-fuzz"> fuzzing findings only</label>',
                     '<span class="filter-chip" id="flt-fuzz-name" hidden></span>'),
     '<span class="filter-chip" id="flt-unbound" hidden></span>',
@@ -2386,6 +2477,7 @@ write_package_page <- function(pkg) {
     '  const changedOnly = document.getElementById("flt-changed"); // null when no baseline',
     '  const emptyOnly = document.getElementById("flt-empty");',
     '  const anyOnly = document.getElementById("flt-any");',
+    '  const llmOnly = document.getElementById("flt-llm");',
     '  const nameInput = document.getElementById("flt-name");',
     '  const unboundChip = document.getElementById("flt-unbound");',
     '  const cards = document.querySelectorAll(".func-list[data-status]");',
@@ -2398,6 +2490,12 @@ write_package_page <- function(pkg) {
     '  let unbound = null;',
     '  if (location.hash === "#empty" && emptyOnly) emptyOnly.checked = true;',
     '  if (location.hash === "#any" && anyOnly) anyOnly.checked = true;',
+    '  if (location.hash === "#llm" && llmOnly) {',
+    '    llmOnly.checked = true;',
+    '    // The fallback runs in gradual mode by default.',
+    '    const g = document.querySelector("input[name=mode][value=gradual]");',
+    '    if (g) g.checked = true;',
+    '  }',
     '  if (location.hash.startsWith("#unbound")) {',
     '    const eq = location.hash.indexOf("=");',
     '    unbound = { name: eq < 0 ? null : decodeURIComponent(location.hash.slice(eq + 1)) };',
@@ -2430,6 +2528,7 @@ write_package_page <- function(pkg) {
     '    const wantChanged = changedOnly && changedOnly.checked;',
     '    const wantEmpty = emptyOnly && emptyOnly.checked;',
     '    const wantAny = anyOnly && anyOnly.checked;',
+    '    const wantLlm = llmOnly && llmOnly.checked;',
     '    const q = (nameInput.value || "").toLowerCase();',
     '    let visible = 0;',
     '    cards.forEach(c => {',
@@ -2441,7 +2540,7 @@ write_package_page <- function(pkg) {
     '      const okStat = !box || box.checked;',
     '      const okChanged = !wantChanged || c.dataset.changed === "true";',
     '      const okEmpty = !wantEmpty || c.dataset.emptyRet === "true";',
-    '      const okAny = !wantAny || c.dataset.anyArg === "true";',
+    '      const okAny = (!wantAny || c.dataset.anyArg === "true") && (!wantLlm || !!c.dataset.llm);',
     '      const okUnbound = !unbound || (unbound.name ? c.dataset.unbound === unbound.name : c.dataset.unboundKind === "prelude");',
     '      const okName = !q || c.dataset.name.indexOf(q) !== -1;',
     if (has_fuzz) c(

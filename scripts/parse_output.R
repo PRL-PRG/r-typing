@@ -207,7 +207,31 @@ r_summary <- function(rep, prefix) {
     pct_typed        = if (n_defs > 0L) round(100 * sum(status == "typed") / n_defs, 1) else NA_real_,
     typing_sec       = if (n_defs > 0L) sum(fld(rd, "elapsed_sec", 0), na.rm = TRUE) else NA_real_
   )
-  setNames(s, paste0(prefix, names(s)))
+  setNames(c(s, llm_summary(rd)), paste0(prefix, c(names(s), names(llm_summary(rd)))))
+}
+
+# The LLM fallback's results over the definitions `rd` (cf. tyr's --llm):
+# which definitions it was tried on, and how each ended. `llm_model` is NA
+# for a run without it. The token counts are the API's: `input` is the part
+# read neither from nor into the provider's cache.
+llm_summary <- function(rd) {
+  tried <- fld(rd, "llm_tried", FALSE) %in% TRUE
+  outcome <- fld(rd, "llm_outcome", NA_character_)
+  model <- fld(rd, "llm_model", NA_character_)
+  tok <- function(f) sum(fld(rd, f, 0), na.rm = TRUE)
+  list(
+    llm_model             = if (any(!is.na(model))) model[!is.na(model)][1L] else NA_character_,
+    n_llm_tried           = sum(tried),
+    n_llm_typed           = sum(tried & outcome %in% "typed"),
+    n_llm_gave_up         = sum(tried & outcome %in% "gave_up"),
+    n_llm_error           = sum(tried & outcome %in% "error"),
+    n_llm_skipped         = sum(!is.na(fld(rd, "llm_skipped", NA_character_))),
+    llm_input_tokens      = tok("llm_input_tokens"),
+    llm_output_tokens     = tok("llm_output_tokens"),
+    llm_cache_read_tokens = tok("llm_cache_read_tokens"),
+    llm_cache_write_tokens = tok("llm_cache_write_tokens"),
+    llm_sec               = tok("llm_elapsed_sec")
+  )
 }
 
 # The same columns, all NA, for a mode that left no report.
@@ -235,11 +259,24 @@ crash_message <- function(rep, exit_code, out_path) {
   if (length(lines) > 0L) lines[length(lines)] else NA_character_
 }
 
+# The LLM fallback's fields of an R definition, as tyr reports them (NA on
+# the native side, and for a definition it was not tried on).
+LLM_COLS <- c("llm_model", "llm_tried", "llm_outcome", "llm_signature", "llm_type",
+  "llm_any_args", "llm_degenerate", "llm_explanation", "llm_skipped", "llm_turns",
+  "llm_checks", "llm_input_tokens", "llm_output_tokens", "llm_cache_read_tokens",
+  "llm_cache_write_tokens", "llm_elapsed_sec")
+llm_rows <- function(rd) {
+  df <- as.data.frame(lapply(setNames(LLM_COLS, LLM_COLS), function(f) fld(rd, f, NA)),
+                      stringsAsFactors = FALSE)
+  df$llm_tried <- df$llm_tried %in% TRUE
+  df
+}
+
 FUNCTION_COLS <- c("package", "function_name", "status", "type_sig", "error_title",
   "error_detail", "timing_sec", "side", "mode", "file", "line", "col", "degenerate",
   "any_arg", "any_args",
   "is_entry_point", "convention", "annotated", "anonymous", "error_name",
-  "unbound_kind", "error_line", "natives", "calls")
+  "unbound_kind", "error_line", "natives", "calls", LLM_COLS)
 
 native_rows <- function(pkg, rep, root) {
   fn <- native_functions(rep)
@@ -254,6 +291,7 @@ native_rows <- function(pkg, rep, root) {
     is_entry_point = fld(fn, "is_entry_point"), convention = fld(fn, "convention"),
     annotated = NA, anonymous = FALSE, error_name = NA, unbound_kind = NA,
     error_line = NA, natives = NA, calls = fld(fn, "calls"),
+    llm_rows(fn[, integer(0), drop = FALSE]),
     stringsAsFactors = FALSE)
 }
 
@@ -274,6 +312,7 @@ r_rows <- function(pkg, rep, root, mode) {
     anonymous = fld(rd, "anonymous"), error_name = fld(rd, "error_name"),
     unbound_kind = fld(rd, "unbound_kind"), error_line = fld(rd, "error_line"),
     natives = fld(rd, "natives"), calls = NA,
+    llm_rows(rd),
     stringsAsFactors = FALSE)
 }
 

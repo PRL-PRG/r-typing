@@ -43,6 +43,12 @@ This runs the full pipeline: **download → extract → typecheck → results**.
 | `CHECKER_OPTS` | *(empty)* | Extra flags passed to the checker |
 | `FALLBACK` | `except-all-sexp` | Which native functions that fail body inference are bound at their declared C signature, so their callers don't cascade as "unbound variable": `all`, `none`, or `except-all-sexp`, all but those whose parameters and result are all `SEXP` (their signature only says that they take and return R values). `1` and `0` still mean `all` and `none`. Such functions are reported as `fallback`, not `typed`. |
 | `LOG_TIMINGS` | `0` | When `LOG_TIMINGS=1`, appends `--log-times`: NativeSem's per-function timing lines in the `.out` files. The measurements come from the JSONL report either way. |
+| `LLM` | *(empty: off)* | The LLM fallback: `provider:model` (e.g. `anthropic:claude-haiku-5-5`). tyr asks that model for a signature of each R definition inference fails on, checks it, and binds it if accepted. The API key comes from the environment (`ANTHROPIC_API_KEY`, `MISTRAL_API_KEY`, `EINFRA_API_KEY`, ...). The conversations go to `<mode>/<pkg>.llm.jsonl` |
+| `LLM_MODES` | `gradual` | Modes the LLM fallback runs in. In strict mode most failures are names the prelude lacks, which no signature fixes |
+| `LLM_OPTS` | *(empty)* | More `--llm-*` flags of tyr, e.g. `--llm-effort low --llm-max-turns 6` |
+| `LLM_CACHE` | *(empty)* | Directory where the model's replies are kept and reused: a rerun costs nothing for the requests it repeats |
+
+The dashboard prices the LLM fallback's token counts with `llm_prices.csv` (USD per million tokens, per `provider:model`). A model missing from it gets no cost; add a row to price it.
 | `LIBRARY` | `work/library` | Where `make install` installs the packages, for fuzzing |
 | `BASELINE` | auto-detects `results.prev/` | Directory whose CSVs are diffed against the current run when generating the dashboard. Set `BASELINE=none` to disable, or `BASELINE=results.something` to compare against a specific snapshot. |
 | `PERF` | `0` | When `PERF=1`, each package run is wrapped with `perf record` (see [Profiling](#profiling) below). |

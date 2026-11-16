@@ -7,7 +7,7 @@ CHECKER     ?= $(CHECKER_DIR)/bin/main.exe
 PRELUDE     ?= $(CHECKER_DIR)/prelude/base.R
 NPROC       := $(shell nproc)
 TIMEOUT     := 6000
-FUN_TIMEOUT ?= 20
+FUN_TIMEOUT ?= 30
 
 # Memory. vctrs alone peaks near 14 GB, and its strict and gradual runs start
 # together. GNU parallel starts no new run while less than MEMFREE is free,

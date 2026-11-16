@@ -35,7 +35,7 @@ This runs the full pipeline: **download → extract → typecheck → results**.
 | `PRELUDE` | `$(CHECKER_DIR)/prelude/base.R` | R signatures loaded before each package (`--prelude`); skipped if the file does not exist |
 | `MODES` | `strict gradual` | Modes each package is checked in |
 | `TS_LIB_DIR` | tree-sitter lib path | Appended to `LD_LIBRARY_PATH` |
-| `FUN_TIMEOUT` | `20` | Per-definition timeout, native and R (seconds) |
+| `FUN_TIMEOUT` | `30` | Per-definition timeout, native and R (seconds) |
 | `MEMFREE` | `4G` | GNU parallel starts no new run while less than this is free, and kills the youngest run when free memory drops below half of it. Big runs (vctrs peaks near 14 GB) then run one after the other. |
 | `RETRIES` | `3` | How many times a run killed that way is started again. A run that never finishes is recorded with exit code 137; `work/typecheck.joblog` lists every run. |
 | `RUN_TIMEOUT` | `0` (off) | Wall-clock limit on one run, in seconds; a run that hits it is recorded with exit code 124 and the records it reported |

@@ -997,7 +997,13 @@ common_style <- function() {
     'details summary { cursor: pointer; color: var(--accent); font-size: .85rem; user-select: none; }',
     'details summary:hover { text-decoration: underline; }',
     'details pre.source { font-family: "JetBrains Mono", monospace; font-size: .8rem; background: #f8f8f8; padding: .5rem; border-radius: 4px; overflow-x: auto; line-height: 1.4; margin-top: .25rem; max-height: 600px; overflow-y: auto; }',
-    'details pre.source code[class*="language-"] { font-family: inherit; font-size: inherit; background: transparent; text-shadow: none; }',
+    'details pre.source code[class*="language-"] { font-family: inherit; font-size: inherit; line-height: inherit; background: transparent; text-shadow: none; }',
+    # The lines an error points at: bands painted on the <pre> (Prism rewrites
+    # the <code>), one line-height (1.4em) tall, below the .5rem padding;
+    # `local` makes them scroll with the code.
+    'details pre.source.has-err { background-repeat: no-repeat; background-attachment: local; }',
+    "details pre.source .token.operator { background: none; }",  # Prism's theme paints them white, over the bands
+    '.err-goto { color: inherit; text-decoration: underline dotted; cursor: pointer; }',
     'details .source-meta { color: var(--muted); font-size: .75rem; margin-top: .25rem; }',
     '.back-link { display: inline-block; margin-bottom: 1rem; color: var(--accent); text-decoration: none; font-size: .9rem; }',
     '.back-link:hover { text-decoration: underline; }',
@@ -2139,6 +2145,15 @@ r_snippet <- function(pkg, file, line, next_line, max_lines = 200L) {
   list(file = file, line = line, lang = "r", snippet = paste(lines[line:end_l], collapse = "\n"))
 }
 
+# "(line N)" after an error: a link that opens the card's source at that
+# line when the card has its source, plain text otherwise.
+err_line_html <- function(l, linked) {
+  l <- suppressWarnings(as.integer(l))
+  if (length(l) != 1L || is.na(l)) return("")
+  if (linked) sprintf(' <span class="unbound-line">(<a class="err-goto" href="#" title="show this line in the source">line %d</a>)</span>', l)
+  else sprintf(' <span class="unbound-line">(line %d)</span>', l)
+}
+
 # One card per native function or R definition. `r` is its functions.csv row;
 # `g` the same R definition in the gradual run (NULL for native functions,
 # whose typing does not depend on the mode).
@@ -2209,7 +2224,7 @@ render_function_block <- function(pkg, r, g = NULL, is_entry = FALSE, entry_conv
   }
   if (status != "typed") {
     if (!is.na(r$error_title) && nzchar(r$error_title)) {
-      where <- if (!is.na(getcol(r, "error_line")[1])) sprintf(' <span class="unbound-line">(line %d)</span>', as.integer(r$error_line)) else ""
+      where <- err_line_html(getcol(r, "error_line")[1], with_source && !is.null(snip))
       hh <- c(hh, sprintf('<div class="error-line">%s%s</div>', esc(r$error_title), where))
     }
     if (nzchar(unbound)) {
@@ -2228,7 +2243,8 @@ render_function_block <- function(pkg, r, g = NULL, is_entry = FALSE, entry_conv
   # The gradual run, when it saw this definition differently.
   if (!is.null(g) && (!identical(status, status_g) || !identical(r$type_sig, g$type_sig))) {
     body <- if (isTRUE(!is.na(g$type_sig))) sprintf('<div class="type-sig">%s</div>', type_sig_html(g$type_sig))
-            else if (isTRUE(!is.na(g$error_title))) sprintf('<div class="error-line">%s</div>', esc(g$error_title))
+            else if (isTRUE(!is.na(g$error_title))) sprintf('<div class="error-line">%s%s</div>', esc(g$error_title),
+                                                            err_line_html(getcol(g, "error_line")[1], with_source && !is.null(snip)))
             else ""
     hh <- c(hh, sprintf('<details><summary>gradual mode: %s</summary>%s</details>', esc(status_g), body))
   }
@@ -2270,8 +2286,33 @@ render_function_block <- function(pkg, r, g = NULL, is_entry = FALSE, entry_conv
       hh <- c(hh, sprintf('<div class="source-meta"><em>(definition not located in %s)</em></div>',
                           if (r$side == "r") "R/" else "src/"))
     } else {
-      hh <- c(hh, sprintf('<details><summary>source</summary><pre class="source language-%s"><code class="language-%s">%s</code></pre><div class="source-meta">%s:%d</div></details>',
-        snip$lang, snip$lang, esc(snip$snippet), esc(snip$file), snip$line))
+      # Highlight where the error is: strict's line in red, gradual's (when
+      # it fails elsewhere) in amber.
+      n_snip <- length(strsplit(snip$snippet, "\n", fixed = TRUE)[[1]])
+      offset <- function(l) {
+        l <- suppressWarnings(as.integer(l))
+        if (length(l) != 1L || is.na(l)) return(NA_integer_)
+        k <- l - snip$line
+        if (k >= 0L && k < n_snip) k else NA_integer_
+      }
+      k_s <- if (status != "typed") offset(getcol(r, "error_line")[1]) else NA_integer_
+      k_g <- if (!is.null(g) && !identical(status_g, "typed")) offset(getcol(g, "error_line")[1]) else NA_integer_
+      if (identical(k_g, k_s)) k_g <- NA_integer_
+      bands <- c(if (!is.na(k_s)) c(k_s, "rgba(220, 38, 38, .16)"),
+                 if (!is.na(k_g)) c(k_g, "rgba(245, 158, 11, .22)"))
+      pre_attr <- ""
+      if (length(bands)) {
+        ks <- bands[c(TRUE, FALSE)]; cols <- bands[c(FALSE, TRUE)]
+        pre_attr <- sprintf(' data-err-k="%s" style="background-image: %s; background-size: %s; background-position: %s;"',
+          ks[1],
+          paste(sprintf("linear-gradient(%s, %s)", cols, cols), collapse = ", "),
+          paste(rep("100% 1.4em", length(ks)), collapse = ", "),
+          paste(sprintf("0 calc(.5rem + %s * 1.4em)", ks), collapse = ", "))
+      }
+      where_meta <- if (length(bands)) sprintf(' &middot; error at line %s', paste(as.integer(ks) + snip$line, collapse = ", ")) else ""
+      hh <- c(hh, sprintf('<details class="source-details"><summary>source</summary><pre class="source language-%s%s"%s><code class="language-%s">%s</code></pre><div class="source-meta">%s:%d%s</div></details>',
+        snip$lang, if (length(bands)) " has-err" else "", pre_attr,
+        snip$lang, esc(snip$snippet), esc(snip$file), snip$line, where_meta))
     }
   }
   hh <- c(hh, '</div>')
@@ -2470,6 +2511,28 @@ write_package_page <- function(pkg) {
 
   ph <- c(ph, '<footer><a href="../index.html">&larr; all packages</a></footer>',
     '<script>',
+    '// Error lines: opening a source scrolls to the highlighted line; "(line N)"',
+    '// opens the source.',
+    '(function () {',
+    '  const toErr = pre => {',
+    '    const k = parseInt(pre.dataset.errK, 10);',
+    '    if (isNaN(k)) return;',
+    '    pre.scrollTop = Math.max(0, (k - 3) * parseFloat(getComputedStyle(pre).lineHeight));',
+    '  };',
+    '  document.querySelectorAll("details.source-details").forEach(d => {',
+    '    const pre = d.querySelector("pre.has-err");',
+    '    if (pre) d.addEventListener("toggle", () => { if (d.open) toErr(pre); });',
+    '  });',
+    '  document.querySelectorAll("a.err-goto").forEach(a => a.addEventListener("click", e => {',
+    '    e.preventDefault();',
+    '    const d = a.closest(".func-list").querySelector("details.source-details");',
+    '    if (!d) return;',
+    '    d.open = true;',
+    '    const pre = d.querySelector("pre.has-err");',
+    '    if (pre) toErr(pre);',
+    '    d.scrollIntoView({ block: "nearest", behavior: "smooth" });',
+    '  }));',
+    '})();',
     '(function () {',
     '  const ep = document.getElementById("flt-ep"); // null without native code',
     '  const stat = {};',

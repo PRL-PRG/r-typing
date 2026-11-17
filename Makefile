@@ -23,6 +23,11 @@ FUN_TIMEOUT ?= 30
 # shows it rather than losing it.
 MEMFREE ?= 4G
 RETRIES ?= 3
+# The checker's GC: a lower space_overhead (OCaml's default is 120) makes it
+# collect sooner. On vctrs, o=40 halves the peak (16 GB to 8 GB, strict and
+# gradual alike) for about 8% more time: without it vctrs does not fit on a
+# 16 GB runner since Rsem reorders named arguments (more definitions typed).
+CHECKER_OCAMLRUNPARAM ?= o=40
 # Optional caps on a single run, applied by run_one_package.sh so a capped run
 # is still recorded: RUN_TIMEOUT in seconds (exit 124), MEM_LIMIT_MB on the
 # checker's address space. 0 or empty disables them.
@@ -95,7 +100,7 @@ FUZZ_UNSAFE ?= 0
 # The harness: the image's, or the tyr checkout's.
 FUZZ_HARNESS ?= $(or $(TYR_FUZZ_HARNESS),$(TYPR_FUZZ_HARNESS),$(TYR_DIR)/fuzz)
 
-export CHECKER_DIR CHECKER PRELUDE TYPESHED TS_LIB_DIR FUN_TIMEOUT CHECKER_OPTS PERF PERF_OPTS RUN_TIMEOUT MEM_LIMIT_MB
+export CHECKER_DIR CHECKER CHECKER_OCAMLRUNPARAM PRELUDE TYPESHED TS_LIB_DIR FUN_TIMEOUT CHECKER_OPTS PERF PERF_OPTS RUN_TIMEOUT MEM_LIMIT_MB
 export LLM LLM_MODES LLM_OPTS LLM_CACHE
 export LIBRARY FUZZ FUZZ_SAMPLES FUZZ_SEED FUZZ_CALL_TIMEOUT FUZZ_RUN_TIMEOUT FUZZ_MEM_MB FUZZ_SANDBOX FUZZ_UNSAFE FUZZ_HARNESS
 

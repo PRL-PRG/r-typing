@@ -37,8 +37,9 @@ This runs the full pipeline: **download → extract → typecheck → results**.
 | `MODES` | `strict gradual` | Modes each package is checked in |
 | `TS_LIB_DIR` | tree-sitter lib path | Appended to `LD_LIBRARY_PATH` |
 | `FUN_TIMEOUT` | `30` | Per-definition timeout, native and R (seconds) |
-| `MEMFREE` | `4G` | GNU parallel starts no new run while less than this is free, and kills the youngest run when free memory drops below half of it. Big runs (vctrs peaks near 14 GB) then run one after the other. |
+| `MEMFREE` | `4G` | GNU parallel starts no new run while less than this is free, and kills the youngest run when free memory drops below half of it. Big runs (vctrs peaks near 8 GB with `CHECKER_OCAMLRUNPARAM`, 16 GB without) then run one after the other. |
 | `RETRIES` | `3` | How many times a run killed that way is started again. A run that never finishes is recorded with exit code 137; `work/typecheck.joblog` lists every run. |
+| `CHECKER_OCAMLRUNPARAM` | `o=40` | `OCAMLRUNPARAM` of the checker only: a GC that collects sooner (OCaml's default `space_overhead` is 120). Halves vctrs' peak memory for about 8% more time; empty for OCaml's defaults |
 | `RUN_TIMEOUT` | `0` (off) | Wall-clock limit on one run, in seconds; a run that hits it is recorded with exit code 124 and the records it reported |
 | `MEM_LIMIT_MB` | `0` (off) | Address-space limit on one run, in MB |
 | `CHECKER_OPTS` | *(empty)* | Extra flags passed to the checker |

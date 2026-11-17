@@ -28,6 +28,10 @@ LIBRARY="$(realpath -m "${LIBRARY:-work/library}")"
 
 CHECKER_DIR="${CHECKER_DIR:-/checker}"
 CHECKER="${CHECKER:-$CHECKER_DIR/_build/default/bin/main.exe}"
+# The checker's GC settings (cf. CHECKER_OCAMLRUNPARAM in the Makefile).
+if [ -n "${CHECKER_OCAMLRUNPARAM:-}" ]; then
+    export OCAMLRUNPARAM="$CHECKER_OCAMLRUNPARAM"
+fi
 TS_LIB_DIR="${TS_LIB_DIR:-/home/pierre/Documents/RLanguage/r-parser/core/tree-sitter/lib}"
 export LD_LIBRARY_PATH="${TS_LIB_DIR}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 

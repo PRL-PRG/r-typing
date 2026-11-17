@@ -198,6 +198,9 @@ r_summary <- function(rep, prefix) {
     n_unbound_prelude = sum(unbound == "prelude", na.rm = TRUE),
     n_unbound_package = sum(unbound == "package", na.rm = TRUE),
     n_unbound_native  = sum(unbound == "native", na.rm = TRUE),
+    # A name of another package (imported, or called qualified) that
+    # r-typeshed has no signature for.
+    n_unbound_import  = sum(unbound == "import", na.rm = TRUE),
     n_other_err      = sum(status == "untypeable" & is.na(unbound)),
     n_empty_ret      = sum(status == "typed" & fld(rd, "degenerate", FALSE), na.rm = TRUE),
     n_any_args       = sum(status == "typed" & any_arg_of(rd), na.rm = TRUE),
@@ -276,7 +279,7 @@ FUNCTION_COLS <- c("package", "function_name", "status", "type_sig", "error_titl
   "error_detail", "timing_sec", "side", "mode", "file", "line", "col", "degenerate",
   "any_arg", "any_args",
   "is_entry_point", "convention", "annotated", "anonymous", "error_name",
-  "unbound_kind", "error_line", "natives", "calls", LLM_COLS)
+  "unbound_kind", "unbound_package", "error_line", "natives", "calls", LLM_COLS)
 
 native_rows <- function(pkg, rep, root) {
   fn <- native_functions(rep)
@@ -290,7 +293,7 @@ native_rows <- function(pkg, rep, root) {
     any_arg = any_arg_of(fn), any_args = fld(fn, "any_args", NA_character_),
     is_entry_point = fld(fn, "is_entry_point"), convention = fld(fn, "convention"),
     annotated = NA, anonymous = FALSE, error_name = NA, unbound_kind = NA,
-    error_line = NA, natives = NA, calls = fld(fn, "calls"),
+    unbound_package = NA, error_line = NA, natives = NA, calls = fld(fn, "calls"),
     llm_rows(fn[, integer(0), drop = FALSE]),
     stringsAsFactors = FALSE)
 }
@@ -310,7 +313,8 @@ r_rows <- function(pkg, rep, root, mode) {
     any_arg = any_arg_of(rd), any_args = fld(rd, "any_args", NA_character_),
     is_entry_point = NA, convention = NA, annotated = fld(rd, "annotated"),
     anonymous = fld(rd, "anonymous"), error_name = fld(rd, "error_name"),
-    unbound_kind = fld(rd, "unbound_kind"), error_line = fld(rd, "error_line"),
+    unbound_kind = fld(rd, "unbound_kind"), unbound_package = fld(rd, "unbound_package"),
+    error_line = fld(rd, "error_line"),
     natives = fld(rd, "natives"), calls = NA,
     llm_rows(rd),
     stringsAsFactors = FALSE)
@@ -556,7 +560,7 @@ if (any(dir.exists(fuzz_dir(packages)))) {
 
 # Carry the checker-version and runner snapshots from work/ into results/ so
 # they survive results.prev/ promotion and CI artifact upload.
-for (f in c("provenance.json", "checker_version.txt", "checker_status.txt", "checker_subject.txt",
+for (f in c("provenance.json", "checker_version.txt", "checker_status.txt", "checker_subject.txt", "typeshed_version.txt",
             "runner.json")) {
   src <- file.path(dirname(raw_dir), f)
   if (file.exists(src)) file.copy(src, file.path(results_dir, f), overwrite = TRUE)

@@ -6,6 +6,10 @@ CHECKER_DIR ?= $(TYR_DIR)/_build/default
 CHECKER     ?= $(CHECKER_DIR)/bin/main.exe
 # The prelude: base R's signatures, and those of stats (attached by default).
 PRELUDE     ?= $(CHECKER_DIR)/prelude/base.R $(CHECKER_DIR)/prelude/stats.R
+# The signatures of the packages a package imports: a checkout of r-typeshed
+# (https://github.com/PRL-PRG/r-typeshed), in r-typeshed/ here (CI checks it
+# out there) or next to this repository. TYPESHED= runs without it.
+TYPESHED    ?= $(firstword $(wildcard $(abspath r-typeshed) $(abspath ../r-typeshed)))
 NPROC       := $(shell nproc)
 TIMEOUT     := 6000
 FUN_TIMEOUT ?= 30
@@ -91,7 +95,7 @@ FUZZ_UNSAFE ?= 0
 # The harness: the image's, or the tyr checkout's.
 FUZZ_HARNESS ?= $(or $(TYR_FUZZ_HARNESS),$(TYPR_FUZZ_HARNESS),$(TYR_DIR)/fuzz)
 
-export CHECKER_DIR CHECKER PRELUDE TS_LIB_DIR FUN_TIMEOUT CHECKER_OPTS PERF PERF_OPTS RUN_TIMEOUT MEM_LIMIT_MB
+export CHECKER_DIR CHECKER PRELUDE TYPESHED TS_LIB_DIR FUN_TIMEOUT CHECKER_OPTS PERF PERF_OPTS RUN_TIMEOUT MEM_LIMIT_MB
 export LLM LLM_MODES LLM_OPTS LLM_CACHE
 export LIBRARY FUZZ FUZZ_SAMPLES FUZZ_SEED FUZZ_CALL_TIMEOUT FUZZ_RUN_TIMEOUT FUZZ_MEM_MB FUZZ_SANDBOX FUZZ_UNSAFE FUZZ_HARNESS
 
@@ -138,6 +142,7 @@ endif
 work/.typecheck_done: work/.extract_done $(CHECKER)
 	@mkdir -p work/raw_output
 	@bash scripts/record_checker_version.sh "$(CHECKER_DIR)" work
+	@git -C "$(TYPESHED)" rev-parse HEAD > work/typeshed_version.txt 2>/dev/null || echo none > work/typeshed_version.txt
 	@bash scripts/record_runner.sh work
 	find work/sources -mindepth 1 -maxdepth 1 -type d \
 		| parallel -j$(NPROC) --timeout $(TIMEOUT) --memfree $(MEMFREE) --retries $(RETRIES) \

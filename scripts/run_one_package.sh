@@ -55,6 +55,11 @@ for p in ${PRELUDE:-}; do
         OPTS+=(--prelude "$p")
     fi
 done
+# TYPESHED: a checkout of r-typeshed, whose signatures of the packages the
+# package imports tyr loads after the prelude.
+if [ -n "${TYPESHED:-}" ] && [ -d "$TYPESHED" ]; then
+    OPTS+=(--typeshed "$TYPESHED")
+fi
 
 # The LLM fallback (LLM=provider:model): asks a model for a signature of the
 # definitions inference fails on, in the modes of LLM_MODES (gradual only by

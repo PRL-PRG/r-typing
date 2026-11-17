@@ -4,8 +4,9 @@ on:
   push:
     branches: [main]
   repository_dispatch:
-    # tyr-updated: a new tyr image (dispatched by PRL-PRG/tyr).
-    types: [tyr-updated]
+    # tyr-updated: a new tyr image (dispatched by PRL-PRG/tyr);
+    # typeshed-updated: new signatures (dispatched by PRL-PRG/r-typeshed).
+    types: [tyr-updated, typeshed-updated]
   workflow_dispatch:
     inputs:
       fuzz:
@@ -59,6 +60,14 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+
+      # The signatures of the packages the dashboard's packages import, found
+      # by the Makefile in r-typeshed/ (TYPESHED).
+      - name: Check out r-typeshed
+        uses: actions/checkout@v6
+        with:
+          repository: PRL-PRG/r-typeshed
+          path: r-typeshed
 
       # results/ is not committed, so the previous run's artifact is the only
       # baseline there is. It feeds the Change column, the was -> now badges

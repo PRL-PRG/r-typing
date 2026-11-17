@@ -1675,38 +1675,45 @@ if (HAVE_FUZZ) {
   h('</details>')
 }
 
-# Missing prelude names: the most actionable R-side view. Only names whose
-# failure is the prelude's: a package's own names (cycles, ordering) and
-# native symbols tyr could not bind are fixed elsewhere.
-if (HAVE_R && nrow(r_strict) > 0) {
-  blocked <- r_strict[!r_strict$anonymous & r_strict$unbound_kind %in% "prelude" &
+# Names a strict-mode definition is blocked by, ranked by definitions
+# blocked: those the prelude lacks, and those r-typeshed lacks. A package's own
+# names (cycles, ordering) and the native symbols tyr could not bind are fixed
+# elsewhere.
+missing_names_table <- function(kind, id, title, legend) {
+  blocked <- r_strict[!r_strict$anonymous & r_strict$unbound_kind %in% kind &
                       !is.na(r_strict$error_name), , drop = FALSE]
-  if (nrow(blocked) > 0) {
-    pkgs_by_name <- split(blocked$package, blocked$error_name)
-    n_blocked <- vapply(pkgs_by_name, length, integer(1))
-    names_ord <- names(pkgs_by_name)[order(-n_blocked, names(pkgs_by_name))]
-    leader_row <- function(nm) {
-      per_pkg <- table(pkgs_by_name[[nm]])
-      per_pkg <- per_pkg[order(-per_pkg, names(per_pkg))]
-      where <- paste(sprintf('<a href="pkg/%s.html#unbound=%s">%s&nbsp;(%d)</a>',
-        esc(names(per_pkg)), esc(utils::URLencode(nm, reserved = TRUE)), esc(names(per_pkg)),
-        as.integer(per_pkg)), collapse = " ")
-      sprintf('<tr><td class="name">%s</td><td class="num">%d</td><td class="num">%d</td><td class="pkgs">%s</td></tr>',
-        esc(nm), n_blocked[[nm]], length(per_pkg), where)
-    }
-    h('<h2 id="prelude-gaps">Missing prelude names <small>by strict-mode definitions blocked</small></h2>')
-    h('<p class="phase-legend">Names used by some definition that are neither defined in a parsed R file of the package, nor a native symbol, nor declared in the prelude. Mostly base R, where a signature in <code>prelude/base.R</code> unblocks the row &mdash; unless a definition then fails on its next missing name. Two other kinds land here too, and no prelude work fixes them: functions imported from other packages (<code>rlang::caller_env</code>), and the package&rsquo;s own functions defined in an R file that did not parse. Definitions blocked by the package&rsquo;s own (parsed) names or by native symbols are not listed.</p>')
-    h('<table class="leaders"><thead><tr><th>Name</th><th style="text-align:right">Definitions blocked</th><th style="text-align:right">Packages</th><th>Where</th></tr></thead><tbody>')
-    shown <- head(names_ord, 25L)
-    for (nm in shown) h(leader_row(nm))
-    h('</tbody></table>')
-    rest <- setdiff(names_ord, shown)
-    if (length(rest) > 0L) {
-      h(sprintf('<details><summary>%d more names</summary><table class="leaders"><tbody>', length(rest)))
-      for (nm in rest) h(leader_row(nm))
-      h('</tbody></table></details>')
-    }
+  if (nrow(blocked) == 0) return(invisible())
+  pkgs_by_name <- split(blocked$package, blocked$error_name)
+  n_blocked <- vapply(pkgs_by_name, length, integer(1))
+  names_ord <- names(pkgs_by_name)[order(-n_blocked, names(pkgs_by_name))]
+  leader_row <- function(nm) {
+    per_pkg <- table(pkgs_by_name[[nm]])
+    per_pkg <- per_pkg[order(-per_pkg, names(per_pkg))]
+    where <- paste(sprintf('<a href="pkg/%s.html#unbound=%s">%s&nbsp;(%d)</a>',
+      esc(names(per_pkg)), esc(utils::URLencode(nm, reserved = TRUE)), esc(names(per_pkg)),
+      as.integer(per_pkg)), collapse = " ")
+    sprintf('<tr><td class="name">%s</td><td class="num">%d</td><td class="num">%d</td><td class="pkgs">%s</td></tr>',
+      esc(nm), n_blocked[[nm]], length(per_pkg), where)
   }
+  h(sprintf('<h2 id="%s">%s <small>by strict-mode definitions blocked</small></h2>', id, title))
+  h(sprintf('<p class="phase-legend">%s</p>', legend))
+  h('<table class="leaders"><thead><tr><th>Name</th><th style="text-align:right">Definitions blocked</th><th style="text-align:right">Packages</th><th>Where</th></tr></thead><tbody>')
+  shown <- head(names_ord, 25L)
+  for (nm in shown) h(leader_row(nm))
+  h('</tbody></table>')
+  rest <- setdiff(names_ord, shown)
+  if (length(rest) > 0L) {
+    h(sprintf('<details><summary>%d more names</summary><table class="leaders"><tbody>', length(rest)))
+    for (nm in rest) h(leader_row(nm))
+    h('</tbody></table></details>')
+  }
+}
+
+if (HAVE_R && nrow(r_strict) > 0) {
+  missing_names_table("prelude", "prelude-gaps", "Missing prelude names",
+    'Names used by some definition that are neither defined in a parsed R file of the package, nor a native symbol, nor declared in the prelude. Mostly base R, where a signature in <code>prelude/base.R</code> unblocks the row &mdash; unless a definition then fails on its next missing name. Two other kinds land here too, and no prelude work fixes them: names of a package imported whole (<code>import(rlang)</code>) that r-typeshed has no signature for, and the package&rsquo;s own functions defined in an R file that did not parse. Definitions blocked by the package&rsquo;s own (parsed) names or by native symbols are not listed.')
+  missing_names_table("import", "typeshed-gaps", "Missing r-typeshed signatures",
+    'Functions of other packages, called qualified (<code>cli::cli_abort</code>) or imported by name (<code>importFrom(glue, glue)</code>), that <a href="https://github.com/PRL-PRG/r-typeshed">r-typeshed</a> has no signature for: a signature in <code>&lt;pkg&gt;/&lt;pkg&gt;.R</code> there unblocks the row.')
 }
 
 # Native -> R linkage: why an entry point did not become an R binding.

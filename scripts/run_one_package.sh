@@ -47,11 +47,14 @@ esac
 if [ -n "${FUN_TIMEOUT:-}" ]; then
     OPTS+=(--timeout "$FUN_TIMEOUT")
 fi
-# Without a prelude every base R function is unbound; skip it rather than fail
-# when running against a checkout that does not have one.
-if [ -n "${PRELUDE:-}" ] && [ -f "$PRELUDE" ]; then
-    OPTS+=(--prelude "$PRELUDE")
-fi
+# PRELUDE: the files of signatures, separated by spaces. Without a prelude
+# every base R function is unbound; skip a file rather than fail when running
+# against a checkout that does not have it.
+for p in ${PRELUDE:-}; do
+    if [ -f "$p" ]; then
+        OPTS+=(--prelude "$p")
+    fi
+done
 
 # The LLM fallback (LLM=provider:model): asks a model for a signature of the
 # definitions inference fails on, in the modes of LLM_MODES (gradual only by

@@ -4,7 +4,8 @@
 TYR_DIR     ?= $(or $(TYPR_DIR),$(abspath ../tyr))
 CHECKER_DIR ?= $(TYR_DIR)/_build/default
 CHECKER     ?= $(CHECKER_DIR)/bin/main.exe
-PRELUDE     ?= $(CHECKER_DIR)/prelude/base.R
+# The prelude: base R's signatures, and those of stats (attached by default).
+PRELUDE     ?= $(CHECKER_DIR)/prelude/base.R $(CHECKER_DIR)/prelude/stats.R
 NPROC       := $(shell nproc)
 TIMEOUT     := 6000
 FUN_TIMEOUT ?= 30

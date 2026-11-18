@@ -1,0 +1,34 @@
+name: Function of the day
+
+# Every morning, an issue about an R function the deployed dashboard types in
+# both modes, never featured before (scripts/fotd.js; settings in
+# .github/function-of-the-day.yml). The previous days' issues are closed,
+# but those a type change reopened. The Pipeline comments later changes on
+# them (ci.yml).
+on:
+  schedule:
+    # 06:00 UTC. GitHub may start scheduled runs late.
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Open one even if one was already opened today"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  open-issue:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Open the issue
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const fotd = require(`${process.env.GITHUB_WORKSPACE}/scripts/fotd.js`);
+            await fotd.daily({ github, context, core, force: ${{ inputs.force == true }} });

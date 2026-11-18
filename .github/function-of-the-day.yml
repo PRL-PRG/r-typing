@@ -1,0 +1,17 @@
+# The function of the day (.github/workflows/function-of-the-day.yml, read
+# by scripts/fotd.js): every morning, an issue about an R function the
+# dashboard types, which a later run's changes are commented on.
+
+# GitHub logins assigned to each new issue, one per line (they need access to
+# the repository).
+assignees:
+  - programLyrique
+  - E-Sh4rk
+  - fikovnik
+
+# Labels added to each new issue, besides `function-of-the-day` and
+# `pkg:<package>`. Missing labels are created.
+labels:
+
+# The deployed dashboard, where fotd.json is read and the issues link to.
+dashboard: https://prl-prg.github.io/r-typing/

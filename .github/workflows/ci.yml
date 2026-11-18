@@ -28,6 +28,7 @@ permissions:
   actions: read     # to fetch the previous run's results as the baseline
   pages: write
   id-token: write
+  issues: write     # to comment the changes of the functions of the day
 
 concurrency:
   group: pages
@@ -123,6 +124,32 @@ jobs:
         env:
           DASHBOARD_PREV_URL: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && 'prev/index.html' || '' }}
         run: make results webpage
+
+      # The functions of the day (function-of-the-day.yml): their changes
+      # since the baseline, commented on their issues, which reopen. Before
+      # the deploy, so that a failure here is seen.
+      - name: List the functions of the day
+        id: fotd
+        if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && hashFiles('results.prev/functions.csv') != ''
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const fotd = require(`${process.env.GITHUB_WORKSPACE}/scripts/fotd.js`);
+            await fotd.writeFeatured({ github, context, core, path: 'fotd_featured.json' });
+
+      - name: Find their changes
+        if: steps.fotd.outcome == 'success'
+        run: |
+          DASHBOARD_URL=$(sed -n 's/^dashboard: *//p' .github/function-of-the-day.yml) \
+            Rscript scripts/fotd_changes.R results.prev results fotd_featured.json fotd_changes.json
+
+      - name: Comment the changes
+        if: steps.fotd.outcome == 'success'
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const fotd = require(`${process.env.GITHUB_WORKSPACE}/scripts/fotd.js`);
+            await fotd.postChanges({ github, context, core, path: 'fotd_changes.json' });
 
       - name: Upload results
         uses: actions/upload-artifact@v7

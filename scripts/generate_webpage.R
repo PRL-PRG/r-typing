@@ -2166,7 +2166,8 @@ err_line_html <- function(l, linked) {
 # whose typing does not depend on the mode).
 render_function_block <- function(pkg, r, g = NULL, is_entry = FALSE, entry_conv = character(),
                                   snip = NULL, with_source = TRUE,
-                                  change = list(kind = "unchanged", html = ""), fuzz = NULL) {
+                                  change = list(kind = "unchanged", html = ""), fuzz = NULL,
+                                  anchor = NULL) {
   name <- r$function_name
   status <- r$status
   status_g <- if (is.null(g)) status else g$status
@@ -2210,6 +2211,8 @@ render_function_block <- function(pkg, r, g = NULL, is_entry = FALSE, entry_conv
   # The fuzzing of this definition (an entry point may be fuzzed under several
   # R names): a data-fuzz attribute for the filter, a badge, and its details.
   fuzz_attr <- if (is.null(fuzz)) "" else sprintf(' data-fuzz="%s"', fuzz_state(fuzz$rows))
+  # An id for links to this card (pkg/<pkg>.html#<anchor>).
+  if (!is.null(anchor)) fuzz_attr <- paste0(fuzz_attr, sprintf(' id="%s"', esc(anchor)))
   hh <- c(hh, sprintf('<div class="func-list" data-side="%s" data-status="%s" data-status-g="%s" data-unbound="%s" data-unbound-kind="%s" data-entry="%s" data-conv="%s" data-name="%s" data-changed="%s" data-empty-ret="%s" data-any-arg="%s" data-llm="%s"%s><h3>%s %s%s%s%s%s%s%s%s%s</h3>',
     esc(r$side), esc(status), esc(status_g), esc(unbound),
     esc(if (nzchar(unbound)) r$unbound_kind else ""),
@@ -2324,6 +2327,41 @@ render_function_block <- function(pkg, r, g = NULL, is_entry = FALSE, entry_conv
   }
   hh <- c(hh, '</div>')
   paste(hh, collapse = "")
+}
+
+# ===== Function of the day =====
+# The candidates of .github/workflows/function-of-the-day.yml, written to
+# fotd.json: the R definitions whose name is defined once in their package,
+# typed (not by an annotation) in both modes, with a non-empty result, and
+# defined by a `function` (not an alias), with their source and a link to
+# their card.
+r_anchor <- function(name) paste0("r-", gsub("[^A-Za-z0-9._-]", "_", name))
+fotd_env <- new.env(parent = emptyenv())
+fotd_env$functions <- list()
+package_version <- function(pkg) {
+  d <- file.path(sources_root, pkg, "DESCRIPTION")
+  if (!file.exists(d)) return(NA_character_)
+  v <- tryCatch(read.dcf(d, fields = "Version")[1, 1], error = function(e) NA_character_)
+  unname(v)
+}
+fotd_add <- function(pkg, r, g, snip, anchor) {
+  typed <- function(x) !is.null(x) && identical(x$status, "typed") &&
+    !isTRUE(as.logical(x$annotated)) && !isTRUE(is_empty_ret(x)) &&
+    !is.na(x$type_sig) && nzchar(x$type_sig)
+  if (!typed(r) || !typed(g) || is.null(snip)) return(invisible())
+  # A function written here, not an alias (`f <- g`).
+  if (!grepl("function\\s*\\(|\\\\\\(", snip$snippet)) return(invisible())
+  mode <- function(x) list(type = x$type_sig, timing_sec = suppressWarnings(as.numeric(x$timing_sec)))
+  fotd_env$functions[[length(fotd_env$functions) + 1L]] <- list(
+    package = pkg, version = package_version(pkg), name = r$function_name,
+    file = r$file, line = as.integer(r$line),
+    page = sprintf("pkg/%s.html#%s", pkg, anchor),
+    strict = mode(r), gradual = mode(g), source = snip$snippet)
+}
+# The CI run this dashboard comes from, if any.
+fotd_run_url <- function() {
+  e <- Sys.getenv(c("GITHUB_SERVER_URL", "GITHUB_REPOSITORY", "GITHUB_RUN_ID"))
+  if (all(nzchar(e))) paste(e[1], e[2], "actions/runs", e[3], sep = "/") else NULL
 }
 
 STATUS_ORDER <- c("typed", "fallback", "untypeable", "timeout", "skipped", "unknown", "internal")
@@ -2501,14 +2539,19 @@ write_package_page <- function(pkg) {
       s <- sort(unique(l[!is.na(l)]))
       vapply(l, function(x) { n <- s[s > x]; if (length(n)) n[1] else NA_real_ }, numeric(1))
     })
+    # A name defined once in the package identifies its card: it gets an
+    # anchor, and can be the function of the day.
+    unique_name <- !(r_rows$function_name %in% r_rows$function_name[duplicated(r_rows$function_name)])
     for (f in unique(r_rows$file)) {
       ph <- c(ph, sprintf('<div class="file-group"><div class="file-head">%s</div>', esc(f)))
       for (i in which(r_rows$file == f)) {
         r <- r_rows[i, ]
         g <- g_by_key[[gradual_key(r$key)]]
-        ph <- c(ph, render_function_block(pkg, r, g = g,
-          snip = r_snippet(pkg, r$file, r$line, next_line[i]),
-          change = baseline_change(r), fuzz = fuzz_for(r$function_name, "r")))
+        snip <- r_snippet(pkg, r$file, r$line, next_line[i])
+        anchor <- if (unique_name[i] && !isTRUE(as.logical(r$anonymous))) r_anchor(r$function_name)
+        ph <- c(ph, render_function_block(pkg, r, g = g, snip = snip,
+          change = baseline_change(r), fuzz = fuzz_for(r$function_name, "r"), anchor = anchor))
+        if (!is.null(anchor)) fotd_add(pkg, r, g, snip, anchor)
       }
       ph <- c(ph, '</div>')
     }
@@ -2646,3 +2689,13 @@ for (pkg in summary_df$package) {
   })
 }
 cat(sprintf("Wrote %d per-package pages to %s/\n", nrow(summary_df), pkg_dir))
+
+if (requireNamespace("jsonlite", quietly = TRUE)) {
+  fotd_out <- file.path(dirname(output_file), "fotd.json")
+  jsonlite::write_json(list(
+      checker_version = checker_meta$version,
+      run_url = fotd_run_url(),
+      functions = unname(as.list(fotd_env$functions))),
+    fotd_out, auto_unbox = TRUE, pretty = TRUE, null = "null", na = "null")
+  cat(sprintf("Wrote %d function-of-the-day candidates to %s\n", length(fotd_env$functions), fotd_out))
+}

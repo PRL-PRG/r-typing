@@ -138,12 +138,25 @@ async function daily({ github, context, core, force = false }) {
   await ensureLabel(github, context, pkgLabel, 'c5def5', `The ${f.package} package`);
   for (const l of config.labels) await ensureLabel(github, context, l, 'ededed', '');
 
+  // Only those GitHub accepts (collaborators of the repository): another
+  // login would fail the whole request.
+  const assignees = [];
+  for (const login of config.assignees) {
+    try {
+      await github.rest.issues.checkUserCanBeAssigned({ owner: context.repo.owner, repo: context.repo.repo, assignee: login });
+      assignees.push(login);
+    } catch (e) {
+      if (e.status !== 404) throw e;
+      core.warning(`${login} cannot be assigned issues in this repository (not a collaborator?): left out.`);
+    }
+  }
+
   const { data: issue } = await github.rest.issues.create({
     owner: context.repo.owner, repo: context.repo.repo,
     title: `Function of the day: ${f.package}::${f.name}`,
     body: issueBody(f, data, config),
     labels: [config.label, pkgLabel, ...config.labels],
-    assignees: config.assignees,
+    assignees,
   });
   core.notice(`Opened #${issue.number} about ${f.package}::${f.name} (one of ${candidates.length} candidates).`);
 

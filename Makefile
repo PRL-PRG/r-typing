@@ -5,7 +5,10 @@ TYR_DIR     ?= $(or $(TYPR_DIR),$(abspath ../tyr))
 CHECKER_DIR ?= $(TYR_DIR)/_build/default
 CHECKER     ?= $(CHECKER_DIR)/bin/main.exe
 # The prelude: base R's signatures, and those of stats (attached by default).
-PRELUDE     ?= $(CHECKER_DIR)/prelude/base.R $(CHECKER_DIR)/prelude/stats.R
+# In tyr's build tree they are in types/ (next to NativeSem's .ty files); the
+# image has them in prelude/.
+PRELUDE_DIR ?= $(if $(wildcard $(CHECKER_DIR)/types/base.R),$(CHECKER_DIR)/types,$(CHECKER_DIR)/prelude)
+PRELUDE     ?= $(PRELUDE_DIR)/base.R $(PRELUDE_DIR)/stats.R
 # The signatures of the packages a package imports: a checkout of r-typeshed
 # (https://github.com/PRL-PRG/r-typeshed), in r-typeshed/ here (CI checks it
 # out there) or next to this repository. TYPESHED= runs without it.
@@ -25,9 +28,12 @@ MEMFREE ?= 4G
 RETRIES ?= 3
 # The checker's GC: a lower space_overhead (OCaml's default is 120) makes it
 # collect sooner. On vctrs, o=40 halves the peak (16 GB to 8 GB, strict and
-# gradual alike) for about 8% more time: without it vctrs does not fit on a
-# 16 GB runner since Rsem reorders named arguments (more definitions typed).
-CHECKER_OCAMLRUNPARAM ?= o=40
+# gradual alike): without it vctrs does not fit on a 16 GB runner since Rsem
+# reorders named arguments (more definitions typed). It costs about 8% more
+# time, which a larger minor heap (s=16M words, 128 MB, instead of 2 MB)
+# wins back: fewer short-lived values are promoted to the major heap (half as
+# many on vctrs), and the peak is slightly lower still (7.8 GB).
+CHECKER_OCAMLRUNPARAM ?= o=40,s=16M
 # Optional caps on a single run, applied by run_one_package.sh so a capped run
 # is still recorded: RUN_TIMEOUT in seconds (exit 124), MEM_LIMIT_MB on the
 # checker's address space. 0 or empty disables them.

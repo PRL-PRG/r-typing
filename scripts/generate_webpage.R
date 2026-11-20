@@ -2344,7 +2344,28 @@ package_version <- function(pkg) {
   v <- tryCatch(read.dcf(d, fields = "Version")[1, 1], error = function(e) NA_character_)
   unname(v)
 }
-fotd_add <- function(pkg, r, g, snip, anchor) {
+# The native functions an R definition calls (its `natives` column: the R
+# symbols, e.g. C_foo, mapped to C names by entry_points.csv), with their type
+# and source when the package's C code has them.
+fotd_natives <- function(pkg, r, native_rows) {
+  nat <- r[["natives"]]
+  syms <- strsplit(if (is.null(nat) || is.na(nat)) "" else nat, ";", fixed = TRUE)[[1]]
+  syms <- unique(trimws(syms[nzchar(trimws(syms))]))
+  ep <- if (!is.null(entry_points_df)) entry_points_df[entry_points_df$package == pkg, , drop = FALSE]
+  lapply(syms, function(s) {
+    c_name <- if (!is.null(ep) && s %in% ep$r_name) ep$symbol[match(s, ep$r_name)] else s
+    n <- native_rows[native_rows$function_name == c_name, , drop = FALSE]
+    snip <- source_snippet(pkg, c_name)
+    list(r_name = s, name = c_name,
+         status = if (nrow(n)) n$status[1] else NULL,
+         type = if (nrow(n) && n$status[1] == "typed" && !is.na(n$type_sig[1])) n$type_sig[1] else NULL,
+         file = if (nrow(n) && !is.na(n$file[1])) n$file[1] else NULL,
+         line = if (!is.null(snip)) as.integer(snip$line) else NULL,
+         lang = if (!is.null(snip)) snip$lang else "c",
+         source = if (!is.null(snip)) snip$snippet else NULL)
+  })
+}
+fotd_add <- function(pkg, r, g, snip, anchor, native_rows) {
   typed <- function(x) !is.null(x) && identical(x$status, "typed") &&
     !isTRUE(as.logical(x$annotated)) && !isTRUE(is_empty_ret(x)) &&
     !is.na(x$type_sig) && nzchar(x$type_sig)
@@ -2356,7 +2377,8 @@ fotd_add <- function(pkg, r, g, snip, anchor) {
     package = pkg, version = package_version(pkg), name = r$function_name,
     file = r$file, line = as.integer(r$line),
     page = sprintf("pkg/%s.html#%s", pkg, anchor),
-    strict = mode(r), gradual = mode(g), source = snip$snippet)
+    strict = mode(r), gradual = mode(g), source = snip$snippet,
+    natives = fotd_natives(pkg, r, native_rows))
 }
 # The CI run this dashboard comes from, if any.
 fotd_run_url <- function() {
@@ -2551,7 +2573,7 @@ write_package_page <- function(pkg) {
         anchor <- if (unique_name[i] && !isTRUE(as.logical(r$anonymous))) r_anchor(r$function_name)
         ph <- c(ph, render_function_block(pkg, r, g = g, snip = snip,
           change = baseline_change(r), fuzz = fuzz_for(r$function_name, "r"), anchor = anchor))
-        if (!is.null(anchor)) fotd_add(pkg, r, g, snip, anchor)
+        if (!is.null(anchor)) fotd_add(pkg, r, g, snip, anchor, rows)
       }
       ph <- c(ph, '</div>')
     }

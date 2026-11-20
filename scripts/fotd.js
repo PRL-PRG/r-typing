@@ -78,7 +78,35 @@ function secs(x) {
   return x < 0.01 ? '<0.01 s' : `${x.toFixed(2)} s`;
 }
 
+// GitHub refuses an issue body over 65536 characters.
+const MAX_BODY = 65000;
+
+// The native functions the R function calls: their type, and their source
+// unless `withSource` is false.
+function nativesSection(f, withSource) {
+  const natives = f.natives || [];
+  if (natives.length === 0) return [];
+  const out = ['', `### Native functions it calls`];
+  for (const n of natives) {
+    const where = n.file ? ` (\`${n.file}\`${n.line ? `, line ${n.line}` : ''})` : '';
+    const alias = n.r_name && n.r_name !== n.name ? `, called from R as \`${n.r_name}\`` : '';
+    out.push('', `#### \`${n.name}\`${where}${alias}`);
+    if (n.type) out.push('Typed:', fenced(n.type));
+    else if (n.status) out.push(`Not typed (${n.status}).`);
+    else out.push('Not among the analysed C functions of the package.');
+    if (withSource && n.source) out.push('<details><summary>Source</summary>', '', fenced(n.source, n.lang || 'c'), '', '</details>');
+  }
+  if (!withSource && natives.some(n => n.source))
+    out.push('', `*Their sources are left out to keep this issue under GitHub's size limit; they are on the package's page.*`);
+  return out;
+}
+
 function issueBody(f, data, config) {
+  const body = issueBodyWith(f, data, config, true);
+  return body.length <= MAX_BODY ? body : issueBodyWith(f, data, config, false);
+}
+
+function issueBodyWith(f, data, config, nativeSources) {
   const card = `${config.dashboard}${f.page}`;
   const pkgPage = `${config.dashboard}pkg/${f.package}.html`;
   const version = f.version ? ` ${f.version}` : '';
@@ -101,6 +129,7 @@ function issueBody(f, data, config) {
     '',
     `### Source`,
     fenced(f.source, 'r'),
+    ...nativesSection(f, nativeSources),
     '',
     '---',
     '**Is this a good type for this function?** React to this issue with 👍 or 👎, and comment to say why: too wide, too narrow, wrong, or what you would expect.',

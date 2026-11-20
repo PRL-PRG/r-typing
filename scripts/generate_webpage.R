@@ -2208,6 +2208,11 @@ render_function_block <- function(pkg, r, g = NULL, is_entry = FALSE, entry_conv
   unbound <- if (isTRUE(!is.na(r$unbound_kind)) && !is.na(r$error_name)) r$error_name else ""
   annotated_badge <- if (isTRUE(as.logical(r$annotated)))
     ' <span class="badge badge-entry" title="checked against a #| signature rather than inferred">annotated</span>' else ''
+  # A cpp11/Rcpp routine: typed from the declared C++ types its glue converts
+  # from and to, its C++ code not analysed.
+  if (identical(getcol(r, "header_kind", NA_character_)[1], "cpp_glue"))
+    annotated_badge <- paste0(annotated_badge,
+      ' <span class="badge badge-entry" title="cpp11/Rcpp routine typed from the declared C++ types of its generated glue (cpp11.cpp, RcppExports.cpp); its C++ code is not analysed">C++ glue</span>')
   # The fuzzing of this definition (an entry point may be fuzzed under several
   # R names): a data-fuzz attribute for the filter, a badge, and its details.
   fuzz_attr <- if (is.null(fuzz)) "" else sprintf(' data-fuzz="%s"', fuzz_state(fuzz$rows))

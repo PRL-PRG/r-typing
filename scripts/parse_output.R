@@ -278,7 +278,7 @@ llm_rows <- function(rd) {
 FUNCTION_COLS <- c("package", "function_name", "status", "type_sig", "error_title",
   "error_detail", "timing_sec", "side", "mode", "file", "line", "col", "degenerate",
   "any_arg", "any_args",
-  "is_entry_point", "convention", "annotated", "anonymous", "error_name",
+  "is_entry_point", "convention", "header_kind", "annotated", "anonymous", "error_name",
   "unbound_kind", "unbound_package", "error_line", "natives", "calls", LLM_COLS)
 
 native_rows <- function(pkg, rep, root) {
@@ -292,6 +292,9 @@ native_rows <- function(pkg, rep, root) {
     line = fld(fn, "line"), col = fld(fn, "col"), degenerate = fld(fn, "degenerate"),
     any_arg = any_arg_of(fn), any_args = fld(fn, "any_args", NA_character_),
     is_entry_point = fld(fn, "is_entry_point"), convention = fld(fn, "convention"),
+    # How the type was obtained; cpp_glue: from the declared C++ types of a
+    # cpp11/Rcpp routine, whose code is not analysed.
+    header_kind = fld(fn, "header_kind", NA_character_),
     annotated = NA, anonymous = FALSE, error_name = NA, unbound_kind = NA,
     unbound_package = NA, error_line = NA, natives = NA, calls = fld(fn, "calls"),
     llm_rows(fn[, integer(0), drop = FALSE]),
@@ -311,7 +314,7 @@ r_rows <- function(pkg, rep, root, mode) {
     side = "r", mode = mode, file = rel_path(fld(rd, "file"), root),
     line = fld(rd, "line"), col = fld(rd, "col"), degenerate = fld(rd, "degenerate"),
     any_arg = any_arg_of(rd), any_args = fld(rd, "any_args", NA_character_),
-    is_entry_point = NA, convention = NA, annotated = fld(rd, "annotated"),
+    is_entry_point = NA, convention = NA, header_kind = NA, annotated = fld(rd, "annotated"),
     anonymous = fld(rd, "anonymous"), error_name = fld(rd, "error_name"),
     unbound_kind = fld(rd, "unbound_kind"), unbound_package = fld(rd, "unbound_package"),
     error_line = fld(rd, "error_line"),

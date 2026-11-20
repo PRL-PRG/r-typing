@@ -241,6 +241,7 @@ One row per native function or R definition. Native functions appear once (from 
 | `file`, `line`, `col` | Where it is defined, relative to the package root (no line for native functions) |
 | `degenerate` | Typed with an `empty` result |
 | `is_entry_point`, `convention` | Native: reached directly from R, and how |
+| `header_kind` | Native: how a typed function got its type; `cpp_glue` for a cpp11/Rcpp routine, typed from the declared C++ types of its generated glue (`cpp11.cpp`, `RcppExports.cpp`) without analysing its C++ code |
 | `annotated`, `anonymous` | R: checked against a `#\|` signature; an anonymous top-level statement |
 | `error_name`, `unbound_kind`, `error_line` | R: the unbound name, its kind (`prelude`, `package`, `native`), and the line of the error |
 | `natives`, `calls` | R: native symbols it calls; native: package functions it calls (`;`-separated) |

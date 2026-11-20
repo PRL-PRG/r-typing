@@ -138,27 +138,31 @@ async function daily({ github, context, core, force = false }) {
   await ensureLabel(github, context, pkgLabel, 'c5def5', `The ${f.package} package`);
   for (const l of config.labels) await ensureLabel(github, context, l, 'ededed', '');
 
-  // Only those GitHub accepts (collaborators of the repository): another
-  // login would fail the whole request.
-  const assignees = [];
-  for (const login of config.assignees) {
-    try {
-      await github.rest.issues.checkUserCanBeAssigned({ owner: context.repo.owner, repo: context.repo.repo, assignee: login });
-      assignees.push(login);
-    } catch (e) {
-      if (e.status !== 404) throw e;
-      core.warning(`${login} cannot be assigned issues in this repository (not a collaborator?): left out.`);
-    }
-  }
-
   const { data: issue } = await github.rest.issues.create({
     owner: context.repo.owner, repo: context.repo.repo,
     title: `Function of the day: ${f.package}::${f.name}`,
     body: issueBody(f, data, config),
     labels: [config.label, pkgLabel, ...config.labels],
-    assignees,
   });
   core.notice(`Opened #${issue.number} about ${f.package}::${f.name} (one of ${candidates.length} candidates).`);
+
+  // Assigned one at a time, after the issue is opened, so that a login GitHub
+  // refuses leaves out only that login. No checkUserCanBeAssigned beforehand:
+  // with the workflow's token, it answers 404 for collaborators whose
+  // membership of the organization is private.
+  for (const login of config.assignees) {
+    try {
+      const { data: updated } = await github.rest.issues.addAssignees({
+        owner: context.repo.owner, repo: context.repo.repo,
+        issue_number: issue.number, assignees: [login],
+      });
+      // GitHub ignores, without an error, a login it cannot assign.
+      if (!updated.assignees.some(a => a.login.toLowerCase() === login.toLowerCase()))
+        core.warning(`${login} was not assigned to #${issue.number}: GitHub ignored it.`);
+    } catch (e) {
+      core.warning(`${login} could not be assigned to #${issue.number}: ${e.message}`);
+    }
+  }
 
   // The previous days' issues, unless a change reopened them.
   for (const old of featured) {

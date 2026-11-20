@@ -7,8 +7,9 @@ name: Function of the day
 # them (ci.yml).
 on:
   schedule:
-    # 06:00 UTC. GitHub may start scheduled runs late.
-    - cron: '0 6 * * *'
+    # 05:47 UTC. GitHub starts scheduled runs late, or drops them, more often
+    # on the hour, when most schedules fire.
+    - cron: '47 5 * * *'
   workflow_dispatch:
     inputs:
       force:

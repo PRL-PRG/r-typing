@@ -73,6 +73,92 @@ function fenced(text, lang = '') {
   return `${f}${lang}\n${text}\n${f}`;
 }
 
+// A type on several lines when it does not fit in [width] columns: an outer
+// (...) or { ... } is entered, then the type is broken before its operators
+// of the lowest precedence at that level (where and and of a recursive type,
+// & between overloads, then |, then ->), or else after the commas between
+// parameters or fields, each part indented and broken in turn. Only spaces
+// and line breaks are added. A scheme's quantifier (∀'a,'b.) goes on its own
+// line.
+const TYPE_WIDTH = 90;
+const TYPE_OPS = [' where ', ' and ', ' & ', ' | ', ' -> ', ' --> '];
+
+// The top-level positions of [op] in [s]: outside brackets, classes and
+// quoted names.
+function topLevel(s, op) {
+  const found = [];
+  let depth = 0, quoted = false;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (quoted) { if (c === '\\') i++; else if (c === '"') quoted = false; continue; }
+    if (c === '"') { quoted = true; continue; }
+    if ('([{'.includes(c) || (c === '<' && s[i + 1] !== '=')) depth++;
+    else if (')]}'.includes(c) || (c === '>' && s[i - 1] !== '-' && depth > 0)) depth--;
+    else if (depth === 0 && s.startsWith(op, i)) found.push(i);
+  }
+  return found;
+}
+
+// [s] is (inner)suffix or { inner }suffix, the bracket at 0 closing just
+// before suffix (classes, possibly with attributes, or [?]).
+function outerGroup(s) {
+  const open = s[0], close = { '(': ')', '{': '}' }[open];
+  if (!close) return null;
+  let depth = 0, quoted = false;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (quoted) { if (c === '\\') i++; else if (c === '"') quoted = false; continue; }
+    if (c === '"') quoted = true;
+    else if (c === '(' || c === '{') depth++;
+    else if ((c === ')' || c === '}') && --depth === 0) {
+      if (c !== close) return null;
+      const suffix = s.slice(i + 1);
+      if (!/^(<[^(){}]*>)?\??$/.test(suffix)) return null;
+      const inner = s.slice(1, i);
+      return open === '{' ? { open: '{ ', inner: inner.trim(), close: ' }', suffix }
+                          : { open: '(', inner, close: ')', suffix };
+    }
+  }
+  return null;
+}
+
+function breakType(s, indent) {
+  if (indent + s.length <= TYPE_WIDTH) return s;
+  const outer = outerGroup(s);
+  if (outer) {
+    const inner = breakType(outer.inner, indent + outer.open.length);
+    return `${outer.open}${inner}${outer.close}${outer.suffix}`;
+  }
+  for (const op of TYPE_OPS) {
+    const at = topLevel(s, op);
+    if (at.length === 0) continue;
+    const parts = [];
+    let start = 0;
+    for (const i of at) { parts.push(s.slice(start, i)); start = i + op.length; }
+    parts.push(s.slice(start));
+    const sym = op.trim();
+    const pad = ' '.repeat(indent);
+    return parts.map((p, k) => k === 0
+      ? breakType(p, indent)
+      : `\n${pad}${sym} ${breakType(p, indent + sym.length + 1)}`).join('');
+  }
+  const commas = topLevel(s, ', ');
+  if (commas.length > 0) {
+    const parts = [];
+    let start = 0;
+    for (const i of commas) { parts.push(s.slice(start, i)); start = i + 2; }
+    parts.push(s.slice(start));
+    const pad = ' '.repeat(indent);
+    return parts.map(p => breakType(p, indent)).join(`,\n${pad}`);
+  }
+  return s;
+}
+
+function formatType(t) {
+  const m = t.match(/^(∀[^.]*\.)\s*(.*)$/s);
+  return m ? `${m[1]}\n${breakType(m[2], 0)}` : breakType(t, 0);
+}
+
 function secs(x) {
   if (x == null || isNaN(x)) return '?';
   return x < 0.01 ? '<0.01 s' : `${x.toFixed(2)} s`;
@@ -120,12 +206,12 @@ function issueBodyWith(f, data, config, nativeSources) {
     '',
     `### Strict mode`,
     `Typed in ${secs(f.strict.timing_sec)}:`,
-    fenced(f.strict.type),
+    fenced(formatType(f.strict.type)),
     '',
     `### Gradual mode`,
     ...(f.gradual.type === f.strict.type
       ? [`Typed in ${secs(f.gradual.timing_sec)}, to the same type.`]
-      : [`Typed in ${secs(f.gradual.timing_sec)}:`, fenced(f.gradual.type)]),
+      : [`Typed in ${secs(f.gradual.timing_sec)}:`, fenced(formatType(f.gradual.type))]),
     '',
     `### Source`,
     fenced(f.source, 'r'),
@@ -219,7 +305,9 @@ async function postChanges({ github, context, core, path }) {
   await ensureLabel(github, context, config.changed_label, 'd93f0b', "The featured function's type changed since");
   for (const c of out.changes) {
     const params = { owner: context.repo.owner, repo: context.repo.repo, issue_number: c.issue };
-    await github.rest.issues.createComment({ ...params, body: c.body });
+    // The types scripts/fotd_changes.R tagged, on several lines.
+    const body = c.body.replace(/```type\n([^\n]*)\n```/g, (_, t) => fenced(formatType(t)));
+    await github.rest.issues.createComment({ ...params, body });
     await github.rest.issues.addLabels({ ...params, labels: [config.changed_label] });
     if (featured.get(c.issue)?.state === 'closed')
       await github.rest.issues.update({ ...params, state: 'open' });
@@ -227,4 +315,4 @@ async function postChanges({ github, context, core, path }) {
   core.notice(`Functions of the day: ${out.changes.length} changed.`);
 }
 
-module.exports = { readConfig, daily, writeFeatured, postChanges, issueBody };
+module.exports = { readConfig, daily, writeFeatured, postChanges, issueBody, formatType };

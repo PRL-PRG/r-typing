@@ -81,7 +81,8 @@ secs <- function(x) {
 # What a row says: its status and, by status, its type or its error.
 describe <- function(r) {
   status <- r$status
-  if (status %in% c("typed", "fallback")) return(fence(na_str(r$type_sig)))
+  # Tagged "type": scripts/fotd.js breaks it into lines before posting.
+  if (status %in% c("typed", "fallback")) return(fence(na_str(r$type_sig), "type"))
   if (status == "timeout") return(sprintf("timed out after %s", secs(r$timing_sec)))
   title <- na_str(r$error_title)
   line <- na_str(r$error_line)

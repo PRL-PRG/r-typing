@@ -124,11 +124,11 @@ function outerGroup(s) {
   return null;
 }
 
-function breakType(s, indent) {
-  if (indent + s.length <= TYPE_WIDTH) return s;
+function breakType(s, indent, width = TYPE_WIDTH) {
+  if (indent + s.length <= width) return s;
   const outer = outerGroup(s);
   if (outer) {
-    const inner = breakType(outer.inner, indent + outer.open.length);
+    const inner = breakType(outer.inner, indent + outer.open.length, width);
     return `${outer.open}${inner}${outer.close}${outer.suffix}`;
   }
   for (const op of TYPE_OPS) {
@@ -141,8 +141,8 @@ function breakType(s, indent) {
     const sym = op.trim();
     const pad = ' '.repeat(indent);
     return parts.map((p, k) => k === 0
-      ? breakType(p, indent)
-      : `\n${pad}${sym} ${breakType(p, indent + sym.length + 1)}`).join('');
+      ? breakType(p, indent, width)
+      : `\n${pad}${sym} ${breakType(p, indent + sym.length + 1, width)}`).join('');
   }
   const commas = topLevel(s, ', ');
   if (commas.length > 0) {
@@ -151,14 +151,40 @@ function breakType(s, indent) {
     for (const i of commas) { parts.push(s.slice(start, i)); start = i + 2; }
     parts.push(s.slice(start));
     const pad = ' '.repeat(indent);
-    return parts.map(p => breakType(p, indent)).join(`,\n${pad}`);
+    return parts.map(p => breakType(p, indent, width)).join(`,\n${pad}`);
   }
   return s;
 }
 
-function formatType(t) {
+function formatType(t, width = TYPE_WIDTH) {
   const m = t.match(/^(∀[^.]*\.)\s*(.*)$/s);
-  return m ? `${m[1]}\n${breakType(m[2], 0)}` : breakType(t, 0);
+  return m ? `${m[1]}\n${breakType(m[2], 0, width)}` : breakType(t, 0, width);
+}
+
+// The lines of [a] and [b] as a unified diff without headers (' ', '-', '+'
+// prefixes), from their longest common subsequence: GitHub colours a ```diff
+// block by line.
+function lineDiff(a, b) {
+  const x = a.split('\n'), y = b.split('\n');
+  const lcs = Array.from({ length: x.length + 1 }, () => new Array(y.length + 1).fill(0));
+  for (let i = x.length - 1; i >= 0; i--)
+    for (let j = y.length - 1; j >= 0; j--)
+      lcs[i][j] = x[i] === y[j] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
+  const out = [];
+  let i = 0, j = 0;
+  while (i < x.length || j < y.length) {
+    if (i < x.length && j < y.length && x[i] === y[j]) { out.push(` ${x[i]}`); i++; j++; }
+    else if (i < x.length && (j === y.length || lcs[i + 1][j] >= lcs[i][j + 1])) out.push(`-${x[i++]}`);
+    else out.push(`+${y[j++]}`);
+  }
+  return out.join('\n');
+}
+
+// The diff of two types, broken more finely than for display (GitHub does
+// not highlight within a line).
+const DIFF_WIDTH = 60;
+function typeDiff(was, now) {
+  return lineDiff(formatType(was, DIFF_WIDTH), formatType(now, DIFF_WIDTH));
 }
 
 function secs(x) {
@@ -323,7 +349,9 @@ async function postChanges({ github, context, core, path }) {
   for (const c of out.changes) {
     const params = { owner: context.repo.owner, repo: context.repo.repo, issue_number: c.issue };
     // The types scripts/fotd_changes.R tagged, on several lines.
-    const body = c.body.replace(/```type\n([^\n]*)\n```/g, (_, t) => fenced(formatType(t)));
+    const body = c.body
+      .replace(/```type\n([^\n]*)\n```/g, (_, t) => fenced(formatType(t)))
+      .replace(/```typediff\n([^\n]*)\n([^\n]*)\n```/g, (_, was, now) => fenced(typeDiff(was, now), 'diff'));
     await github.rest.issues.createComment({ ...params, body });
     await github.rest.issues.addLabels({ ...params, labels: [config.changed_label] });
     if (featured.get(c.issue)?.state === 'closed')
@@ -332,4 +360,4 @@ async function postChanges({ github, context, core, path }) {
   core.notice(`Functions of the day: ${out.changes.length} changed.`);
 }
 
-module.exports = { readConfig, daily, writeFeatured, postChanges, issueBody, formatType, approvedByReactions };
+module.exports = { readConfig, daily, writeFeatured, postChanges, issueBody, formatType, typeDiff, approvedByReactions };

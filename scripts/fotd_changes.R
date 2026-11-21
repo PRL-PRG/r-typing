@@ -78,6 +78,17 @@ secs <- function(x) {
   x <- suppressWarnings(as.numeric(x))
   if (is.na(x)) "?" else if (x < 0.01) "<0.01 s" else sprintf("%.2f s", x)
 }
+# When both rows have a type and they differ, the two types (one line each),
+# tagged "typediff": scripts/fotd.js turns them into a line diff before
+# posting.
+has_type <- function(r) r$status %in% c("typed", "fallback") && nzchar(na_str(r$type_sig))
+type_diff <- function(was, now) {
+  if (!has_type(was) || !has_type(now)) return("")
+  a <- gsub("\n", " ", na_str(was$type_sig)); b <- gsub("\n", " ", na_str(now$type_sig))
+  if (identical(a, b)) return("")
+  sprintf("\n\nDiff:\n```typediff\n%s\n%s\n```", a, b)
+}
+
 # What a row says: its status and, by status, its type or its error.
 describe <- function(r) {
   status <- r$status
@@ -111,8 +122,9 @@ for (f in featured) {
       next
     }
     if (same(was, now)) next
-    parts <- c(parts, sprintf("**%s**: %s → **%s** (%s, was %s)\n\nWas:\n%s\n\nNow:\n%s",
-      mode, was$status, now$status, secs(now$timing_sec), secs(was$timing_sec), describe(was), describe(now)))
+    parts <- c(parts, paste0(sprintf("**%s**: %s → **%s** (%s, was %s)\n\nWas:\n%s\n\nNow:\n%s",
+      mode, was$status, now$status, secs(now$timing_sec), secs(was$timing_sec), describe(was), describe(now)),
+      type_diff(was, now)))
   }
   if (length(parts) == 0L) next
   card <- if (nzchar(dashboard)) sprintf(" ([dashboard](%spkg/%s.html#r-%s))", dashboard, pkg,

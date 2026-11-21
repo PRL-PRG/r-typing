@@ -2,9 +2,9 @@ name: Function of the day
 
 # Every morning, an issue about an R function the deployed dashboard types in
 # both modes, never featured before (scripts/fotd.js; settings in
-# .github/function-of-the-day.yml). The previous days' issues are closed,
-# but those a type change reopened. The Pipeline comments later changes on
-# them (ci.yml).
+# .github/function-of-the-day.yml). The previous days' issues that only got
+# thumbs up are closed, but those a type change reopened; the others are left
+# for a human to close. The Pipeline comments later changes on them (ci.yml).
 on:
   schedule:
     # 05:47 UTC, then every 3 hours until 17:47 UTC. GitHub starts scheduled

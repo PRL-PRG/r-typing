@@ -2,7 +2,8 @@
 //
 // - daily(): .github/workflows/function-of-the-day.yml. Opens an issue about
 //   an R function the deployed dashboard types in both modes (its fotd.json),
-//   one never featured before, and closes the previous ones.
+//   one never featured before, and closes the previous ones that only got
+//   thumbs up (approvedByReactions).
 // - writeFeatured() / postChanges(): the Pipeline (ci.yml). Lists the
 //   functions featured so far, for scripts/fotd_changes.R, then comments the
 //   changes it finds on their issues and reopens them.
@@ -51,7 +52,8 @@ async function featuredIssues(github, context, config) {
     .map(i => {
       const m = (i.body || '').match(MARKER);
       return m && { issue: i.number, state: i.state, created_at: i.created_at,
-                    labels: i.labels.map(l => l.name), package: m[1], name: m[2] };
+                    labels: i.labels.map(l => l.name), reactions: i.reactions,
+                    package: m[1], name: m[2] };
     })
     .filter(Boolean)
     .sort((a, b) => a.issue - b.issue);
@@ -220,7 +222,7 @@ function issueBodyWith(f, data, config, nativeSources) {
     '---',
     '**Is this a good type for this function?** React to this issue with 👍 or 👎, and comment to say why: too wide, too narrow, wrong, or what you would expect.',
     '',
-    `*A later run in which this function's type changes, or it stops typing, comments here and reopens the issue (label \`${config.changed_label}\`).*`,
+    `*With only 👍, this issue is closed automatically the next morning; with any other reaction, it stays open for someone to close by hand. A later run in which this function's type changes, or it stops typing, comments here and reopens the issue (label \`${config.changed_label}\`).*`,
   ].join('\n');
 }
 
@@ -279,13 +281,28 @@ async function daily({ github, context, core, force = false }) {
     }
   }
 
-  // The previous days' issues, unless a change reopened them.
+  // The previous days' issues that only got thumbs up, unless a change
+  // reopened them: the others are left for a human to close.
+  let closed = 0;
   for (const old of featured) {
-    if (old.state === 'open' && !old.labels.includes(config.changed_label)) {
+    if (old.state === 'open' && !old.labels.includes(config.changed_label)
+        && approvedByReactions(old.reactions)) {
+      closed++;
       await github.rest.issues.update({ owner: context.repo.owner, repo: context.repo.repo,
                                         issue_number: old.issue, state: 'closed', state_reason: 'completed' });
     }
   }
+  const left = featured.filter(f => f.state === 'open').length - closed;
+  if (left > 0) core.notice(`${left} previous issue(s) left open: not only thumbs up, or reopened by a change.`);
+}
+
+// Whether an issue's reactions approve its type: at least one 👍, and no
+// other reaction (👎, or any other emoji, asks for a human to close it). An
+// issue nobody reacted to stays open too.
+function approvedByReactions(reactions) {
+  if (!reactions) return false;
+  const up = reactions['+1'] || 0;
+  return up > 0 && (reactions.total_count || 0) === up;
 }
 
 // featured.json for scripts/fotd_changes.R.
@@ -315,4 +332,4 @@ async function postChanges({ github, context, core, path }) {
   core.notice(`Functions of the day: ${out.changes.length} changed.`);
 }
 
-module.exports = { readConfig, daily, writeFeatured, postChanges, issueBody, formatType };
+module.exports = { readConfig, daily, writeFeatured, postChanges, issueBody, formatType, approvedByReactions };

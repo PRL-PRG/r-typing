@@ -7,9 +7,11 @@ name: Function of the day
 # them (ci.yml).
 on:
   schedule:
-    # 05:47 UTC. GitHub starts scheduled runs late, or drops them, more often
-    # on the hour, when most schedules fire.
-    - cron: '47 5 * * *'
+    # 05:47 UTC, then every 3 hours until 17:47 UTC. GitHub starts scheduled
+    # runs late (8 h or more), or drops them: the first run that fires opens
+    # the day's issue, and the others stop at once, one being already opened
+    # that (UTC) day (scripts/fotd.js). Off the hour, when fewer schedules fire.
+    - cron: '47 5,8,11,14,17 * * *'
   workflow_dispatch:
     inputs:
       force:

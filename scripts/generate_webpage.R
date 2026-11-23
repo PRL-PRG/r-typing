@@ -489,11 +489,41 @@ arrow_html <- function(s) {
   esc(s)
 }
 
+# The type of an R closure is printed with its attributes: "(D -> R)<>", or
+# "(D -> R)<> where x1 = \u2026" when it is recursive. A closure defined at the top
+# level never has any, so the "(\u2026)<>" only clutters the type: it is removed,
+# leaving "D -> R" (and its where clause). A closure with attributes
+# ("(\u2026)<> with { \u2026 }", "(\u2026)<`a>") keeps them.
+# split_closure_attrs gives the type without them and the where clause apart
+# (" where …", or ""), or NULL when the type is not of that form.
+split_closure_attrs <- function(s) {
+  if (is.na(s) || !startsWith(s, "(")) return(NULL)
+  ch <- strsplit(s, "")[[1]]
+  j <- closing_paren(ch)
+  if (is.na(j) || j <= 2L) return(NULL)
+  after <- if (j < length(ch)) paste(ch[(j + 1L):length(ch)], collapse = "") else ""
+  if (!(after == "<>" || startsWith(after, "<> where "))) return(NULL)
+  list(type = paste(ch[2:(j - 1L)], collapse = ""), where = substring(after, 3L))
+}
+strip_closure_attrs <- function(s) {
+  p <- split_closure_attrs(s)
+  if (is.null(p)) s else paste0(p$type, p$where)
+}
+# The same, after the quantifier of a polymorphic type ("\u2200'a. (\u2026)<>").
+strip_closure_attrs_q <- function(s) {
+  if (is.na(s)) return(s)
+  m <- regmatches(s, regexec("^(\u2200[^.]*\\.) (.*)$", s))[[1]]
+  if (length(m) == 3L) paste(m[2], strip_closure_attrs(m[3])) else strip_closure_attrs(s)
+}
+
 type_sig_html <- function(s) {
   if (is.na(s) || !nzchar(s)) return(esc(s))
   quant <- ""; rest <- s
   m <- regmatches(s, regexec("^(\u2200[^.]*\\.) (.*)$", s))[[1]]
   if (length(m) == 3L) { quant <- m[2]; rest <- m[3] }
+  where <- ""
+  p <- split_closure_attrs(rest)
+  if (!is.null(p)) { rest <- p$type; where <- p$where }
   open <- ""; close <- ""
   parts <- split_top_and(rest)
   if (length(parts) < 2L && startsWith(rest, "(")) {
@@ -510,7 +540,7 @@ type_sig_html <- function(s) {
   }
   if (length(parts) < 2L || !all(vapply(parts, is_paren_arrow, logical(1))))
     return(paste0(if (nzchar(quant)) sprintf('<span class="ovl-quant">%s</span> ', esc(quant)) else "",
-                  arrow_html(rest)))
+                  arrow_html(rest), esc(where)))
   ovls <- vapply(seq_along(parts), function(k) {
     p <- parts[k]
     cls <- c("ovl", if (k %% 2L == 0L) "ovl-alt", if (grepl("-> empty\\)$", p)) "ovl-err")
@@ -519,7 +549,8 @@ type_sig_html <- function(s) {
   paste0(if (nzchar(quant)) sprintf('<span class="ovl-quant">%s</span> ', esc(quant)) else "",
          if (nzchar(open)) esc(open) else "",
          paste(ovls, collapse = '<b class="ovl-and">&amp;</b>'),
-         if (nzchar(close)) sprintf('<span class="ovl-close">%s</span>', esc(close)) else "")
+         if (nzchar(close)) sprintf('<span class="ovl-close">%s</span>', esc(close)) else "",
+         esc(where))
 }
 
 pct_bar <- function(typed, total, empty_label = "no functions analysed") {
@@ -1258,7 +1289,7 @@ fuzz_details <- function(fr, s, show_name = FALSE, show_type = TRUE, max_rows = 
     sprintf('<td>%s</td>', esc(paste0(if (nzchar(where)) paste0(where, ": ") else "", if (is.na(m)) "" else m)))
   }
   body <- c(
-    if (show_type) sprintf('<div class="unbound-line">type drawn from: <code>%s</code></div>', esc(fr$type)),
+    if (show_type) sprintf('<div class="unbound-line">type drawn from: <code>%s</code></div>', esc(strip_closure_attrs_q(fr$type))),
     if (nrow(unsound) > 0) c('<h4>Counterexamples</h4>',
       fuzz_table(c("call", "predicted", "returned"),
         rows_of(unsound, function(x) sprintf('<tr>%s%s%s</tr>', call(x), ty(x$expected), ty(x$result)))),

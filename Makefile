@@ -4,11 +4,12 @@
 TYR_DIR     ?= $(or $(TYPR_DIR),$(abspath ../tyr))
 CHECKER_DIR ?= $(TYR_DIR)/_build/default
 CHECKER     ?= $(CHECKER_DIR)/bin/main.exe
-# The prelude: base R's signatures, and those of stats (attached by default).
+# The prelude: base R's signatures, and those of stats and utils (attached
+# by default).
 # In tyr's build tree they are in types/ (next to NativeSem's .ty files); the
 # image has them in prelude/.
 PRELUDE_DIR ?= $(if $(wildcard $(CHECKER_DIR)/types/base.R),$(CHECKER_DIR)/types,$(CHECKER_DIR)/prelude)
-PRELUDE     ?= $(PRELUDE_DIR)/base.R $(PRELUDE_DIR)/stats.R
+PRELUDE     ?= $(PRELUDE_DIR)/base.R $(PRELUDE_DIR)/stats.R $(PRELUDE_DIR)/utils.R
 # The signatures of the packages a package imports: a checkout of r-typeshed
 # (https://github.com/PRL-PRG/r-typeshed), in r-typeshed/ here (CI checks it
 # out there) or next to this repository. TYPESHED= runs without it.

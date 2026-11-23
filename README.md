@@ -33,7 +33,7 @@ This runs the full pipeline: **download → extract → typecheck → results**.
 | `TYR_DIR` | `../tyr` | tyr checkout, built by `make build-checker` |
 | `CHECKER_DIR` | `$(TYR_DIR)/_build/default` | Directory the checker runs from; NativeSem looks for `types/` among its ancestors |
 | `CHECKER` | `$(CHECKER_DIR)/bin/main.exe` | Checker binary |
-| `PRELUDE` | `$(CHECKER_DIR)/prelude/base.R $(CHECKER_DIR)/prelude/stats.R` | Files of R signatures loaded before each package (`--prelude`, one per file, separated by spaces); a file that does not exist is skipped |
+| `PRELUDE` | `$(CHECKER_DIR)/prelude/base.R $(CHECKER_DIR)/prelude/stats.R $(CHECKER_DIR)/prelude/utils.R` | Files of R signatures loaded before each package (`--prelude`, one per file, separated by spaces); a file that does not exist is skipped |
 | `TYPESHED` | `r-typeshed/` here, or `../r-typeshed` | A checkout of [r-typeshed](https://github.com/PRL-PRG/r-typeshed): tyr loads the signatures of the packages each package imports or calls qualified (`--typeshed`); empty to run without it |
 | `MODES` | `strict gradual` | Modes each package is checked in |
 | `TS_LIB_DIR` | tree-sitter lib path | Appended to `LD_LIBRARY_PATH` |

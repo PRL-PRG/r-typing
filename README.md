@@ -19,7 +19,8 @@ Every package is checked twice: **strict** reports every name tyr cannot resolve
 
 ```bash
 # With a built tyr checkout next to this one (../tyr):
-# edit packages.txt to list the packages you want, then:
+# edit packages.txt to list the packages you want (a CRAN package's name,
+# github:owner/repo[@ref], or r:pkg for a base package such as compiler), then:
 make
 ```
 
@@ -73,7 +74,7 @@ tyr parses its flags with OCaml's `Arg`: an unknown flag fails the run with exit
 | Target | Description |
 |--------|-------------|
 | `make` / `make all` | Run the full pipeline |
-| `make download` | Download source tarballs from CRAN |
+| `make download` | Download source tarballs: from CRAN, GitHub or R's sources (see `packages.txt`) |
 | `make extract` | Extract tarballs into `work/sources/` |
 | `make install` | Install each package from its tarball into `LIBRARY`, for fuzzing (see [Fuzzing](#fuzzing)) |
 | `make typecheck` | Run tyr on each package, in each mode (via GNU parallel) |
@@ -320,7 +321,7 @@ The page renders NativeSem-era results too (no R side, no `links.csv`): every R 
 ## File layout
 
 ```
-packages.txt              # One CRAN package name per line
+packages.txt              # One package per line: `pkg` (CRAN), `github:owner/repo[@ref]`, or `r:pkg` (a base package, from R's sources)
 Makefile                   # Pipeline orchestration
 scripts/
   download_packages.R      # Download source tarballs

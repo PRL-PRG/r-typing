@@ -96,6 +96,9 @@ jobs:
           path: results.prev
 
       - name: Download source tarballs
+        env:
+          # For the packages on GitHub (github: in packages.txt).
+          GITHUB_TOKEN: ${{ github.token }}
         run: make download
 
       - name: Extract tarballs

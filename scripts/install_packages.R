@@ -70,6 +70,17 @@ for (i in seq_len(nrow(downloaded))) {
   cat(sprintf("  %s ... ", pkg))
   start <- Sys.time()
 
+  # A base package (r: in packages.txt) comes with R, from the very sources
+  # it was downloaded from: not installed again.
+  if (pkg %in% base_pkgs) {
+    cat("ok (base)\n")
+    rows[[length(rows) + 1]] <- data.frame(
+      package = pkg, file = downloaded$file[[i]], status = "ok",
+      error = NA_character_, deps_missing = "", elapsed_sec = 0,
+      stringsAsFactors = FALSE)
+    next
+  }
+
   deps <- tryCatch(dependencies(tarball, pkg), error = function(e) character())
   need <- missing_pkgs(deps)
   if (length(need)) {

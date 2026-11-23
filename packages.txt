@@ -18,3 +18,5 @@ KernSmooth
 dqrng
 later
 timechange
+r:compiler
+github:fikovnik/texvars

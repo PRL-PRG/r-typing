@@ -1302,7 +1302,7 @@ h(common_style())
 h('</head><body>')
 
 h(sprintf('<h1>%s<span class="r">R</span> we type yet?</h1>', tyr_logo()))
-h(sprintf('<p class="subtitle">%s for %d CRAN packages &mdash; generated %s%s</p>',
+h(sprintf('<p class="subtitle">%s for %d R packages &mdash; generated %s%s</p>',
   if (HAVE_R) 'tyr results (Rsem on the R code, NativeSem on the C code)' else 'Type-checking results',
   n_packages, format(Sys.time(), "%Y-%m-%d %H:%M"),
   paste0(run_html(checker_meta), checker_version_html())))

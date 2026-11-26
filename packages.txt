@@ -20,3 +20,5 @@ later
 timechange
 r:compiler
 github:fikovnik/texvars
+Umpire
+DiceKriging
